@@ -15,10 +15,11 @@
 # Combine this with authentication on the dashboard's control endpoints
 # (see README) rather than treating this file alone as the security boundary.
 #
-# NOTE: /usr/bin/umount is used by the drive "Unmount" button. The app only
-# ever runs a plain (non-forced) umount on a mount point it has just confirmed
-# is a currently-mounted, non-system drive, but sudoers cannot enforce that,
-# so the same caveat as kill/systemctl applies.
+# NOTE: /usr/bin/umount and /usr/bin/mount are used by the drive "Unmount" and
+# "Mount All" buttons. The app only ever runs a plain (non-forced) umount on a
+# mount point it has just confirmed is a currently-mounted, non-system drive,
+# and `mount -a` (which only touches what is already listed in /etc/fstab), but
+# sudoers cannot enforce that, so the same caveat as kill/systemctl applies.
 
 <YOUR_USERNAME> ALL=(root) NOPASSWD: /usr/sbin/smartctl
 <YOUR_USERNAME> ALL=(root) NOPASSWD: /usr/bin/wg
@@ -27,5 +28,6 @@
 <YOUR_USERNAME> ALL=(root) NOPASSWD: /usr/bin/apt-get
 <YOUR_USERNAME> ALL=(root) NOPASSWD: /usr/bin/kill
 <YOUR_USERNAME> ALL=(root) NOPASSWD: /usr/bin/umount
+<YOUR_USERNAME> ALL=(root) NOPASSWD: /usr/bin/mount
 <YOUR_USERNAME> ALL=(root) NOPASSWD: /usr/local/bin/pihole, /usr/bin/pihole
 <YOUR_USERNAME> ALL=(root) NOPASSWD: /usr/local/bin/windscribe-switch

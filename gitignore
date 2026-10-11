@@ -1,0 +1,17 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Editor/OS
+.vscode/
+.idea/
+.DS_Store
+
+# Logs / packaged archives (the log contains LAN IPs and client addresses)
+*.log
+*.zip

@@ -40,8 +40,9 @@ The dashboard is one page, split into three columns:
   update checker.
 - **Center** — CPU/RAM history chart, network + disk I/O history chart,
   per-core CPU + RAM + per-drive usage (used/free/total, whole-disk size,
-  SMART health/temperature/life remaining, and an Unmount button for
-  non-system drives), and a process
+  SMART health/temperature/life remaining, an Unmount button for
+  non-system drives, and a Mount All button that mounts anything in
+  `/etc/fstab` that isn't mounted yet), and a process
   monitor that flags processes hogging CPU or stuck in an uninterruptible
   (`D`) state.
 - **Right** — active Jellyfin streams with playback controls, public IP,
@@ -72,7 +73,7 @@ using credentials from `.env`.
 ## Prerequisites
 
 - A Linux host (this reads `/proc`, and shells out to `systemctl`,
-  `smartctl`, `wg`, `apt-get`, `kill`, `shutdown`, `umount` — it will not run on
+  `smartctl`, `wg`, `apt-get`, `kill`, `shutdown`, `mount`, `umount` — it will not run on
   macOS or Windows as-is)
 - Python 3.9+
 - `sudo` access for the user running the app (see
@@ -197,7 +198,8 @@ sudo journalctl -u dashboard -n 200 | grep -i "Config Warning"   # should be emp
 | System Compute Timeline / Hardware | `/proc/stat`, `/proc/meminfo`, `/sys/class/thermal` | Per-core CPU computed from tick deltas between polls |
 | I/O Throughput | `/proc/net/dev` equivalent via interface stats, `/proc/diskstats` | |
 | Disk usage / SMART health | `/proc/mounts` + `statvfs`, `/sys/block` for whole-disk size, `smartctl -j` | Background loop polls every 30s so `smartctl` (slow, needs sudo) isn't run per-request. SATA, USB-bridged and NVMe drives are supported; drives that are spun down are skipped (last known values kept) so polling doesn't wake them — see `SMART_SKIP_STANDBY` in `main.py`. A drive that reports no SMART data shows `N/A`, never a false `OK`. |
-| Drive Unmount | `POST /api/control/unmount` → `sudo umount` | Plain (never forced) unmount, only for mount points currently in `/proc/mounts`. System mounts (`/`, `/boot/firmware`, `/home`, …) are refused server-side. Fails with "target is busy" if a service still has files open on the drive. There is no remount button — remount on the server or reboot (fstab). |
+| Drive Unmount | `POST /api/control/unmount` → `sudo umount` | Plain (never forced) unmount, only for mount points currently in `/proc/mounts`. System mounts (`/`, `/boot/firmware`, `/home`, …) are refused server-side. Fails with "target is busy" if a service still has files open on the drive. To bring drives back, use **Mount All** (below). |
+| Drive Mount All | `POST /api/control/mount-all` → `sudo mount -a` | Mounts every `/etc/fstab` entry that isn't mounted yet (skips `noauto`), so unmounted drives reappear as cards. The widget lists which fstab drives are currently unmounted (and flags ones that aren't plugged in), and highlights the button when there's something it can mount. Safe to click with everything already mounted. Only mounts what's already in fstab — the dashboard can't mount arbitrary devices. |
 | Process Monitor | `/proc/[pid]/stat`, `/status`, `/cmdline` | Flags sustained ≥80% CPU or `D`-state processes; can terminate/kill any listed PID, or `systemctl restart` if it maps to a monitored service |
 | Core Services Daemon | `systemctl is-active` | Start/stop/restart any service in `SERVICES_TO_MONITOR` |
 | Hardware Controls | `shutdown` | Reboot / shutdown the host |
@@ -289,6 +291,9 @@ binary's actual location (`which smartctl`, `which wg`, etc. to confirm).
 
 **Unmount says "target is busy"**
 Something still has files open on that drive (Jellyfin, qBittorrent, Samba, a shell `cd`'d into it). Stop it first, or find the culprit with `sudo lsof +f -- /mnt/<drive>`. The dashboard deliberately never force-unmounts.
+
+**Mount All fails or only mounts some drives**
+The alert shows `mount`'s own error. Check `sudo mount -a` on the server for the full picture. An NTFS drive that wasn't unmounted cleanly (power loss) can be refused as a dirty volume — run chkdsk on it from Windows, or as a last resort `sudo ntfsfix -d /dev/sdXN`. A drive that isn't plugged in is listed as "not connected" and can't be mounted until it is.
 
 **SMART shows N/A for a drive**
 USB enclosures often don't pass SMART through; try `sudo smartctl -a -d sat /dev/sdX` manually. Drives that are asleep keep their last known values rather than being woken up.

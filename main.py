@@ -573,7 +573,7 @@ def resolve_parent_disk(device_path: str) -> str:
     # Fallback: old heuristic, kept only as a last resort
     return "/dev/" + "".join(c for c in dev_name if not c.isdigit())
 
-# --- Mounted-drive helpers (sizes + unmount) ---
+# --- Mounted-drive helpers (sizes + mount/unmount) ---
 # Mount points the dashboard will never offer to unmount (and the unmount
 # endpoint refuses outright, regardless of what the frontend sends).
 PROTECTED_MOUNTS = {
@@ -581,6 +581,65 @@ PROTECTED_MOUNTS = {
     "/etc", "/opt", "/srv", "/tmp", "/root",
 }
 UNMOUNT_TIMEOUT = 20.0
+MOUNT_ALL_TIMEOUT = 60.0   # NTFS/USB drives can take a while (journal replay etc.)
+# Serializes mount/unmount operations so a double-click (or two browser tabs)
+# can't run `mount -a` and `umount` against each other.
+_mount_lock = asyncio.Lock()
+
+_FSTAB_BY_DIR = {"UUID": "uuid", "LABEL": "label", "PARTUUID": "partuuid", "PARTLABEL": "partlabel"}
+
+def fstab_device_present(spec: str) -> bool:
+    """Is the device behind an fstab source (UUID=..., LABEL=..., /dev/...)
+    actually plugged in right now? Lets the UI tell 'unmounted, can be
+    mounted' apart from 'unmounted because the drive isn't connected'."""
+    if spec.startswith("/dev/"):
+        return os.path.exists(spec)
+    kind, _, value = spec.partition("=")
+    sub = _FSTAB_BY_DIR.get(kind)
+    value = value.strip('"')
+    if not sub or not value:
+        return False
+    if sub in ("label", "partlabel") and not re.fullmatch(r"[\w.-]+", value):
+        return True   # udev escapes odd characters in by-label names; don't guess wrong
+    try:
+        names = os.listdir(f"/dev/disk/by-{sub}")
+    except OSError:
+        return False
+    return value.lower() in (n.lower() for n in names)
+
+def read_unmounted_fstab_drives(mounted_points: set, fstab_path: str = "/etc/fstab") -> List[Dict[str, Any]]:
+    """/etc/fstab entries backed by a real block device that aren't mounted
+    right now — i.e. exactly what `mount -a` would try to mount. Skips swap,
+    pseudo filesystems, and `noauto` entries (which `mount -a` skips too)."""
+    result: List[Dict[str, Any]] = []
+    try:
+        with open(fstab_path, "r") as f:
+            lines = f.readlines()
+    except OSError:
+        return result
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        spec = _unescape_mount_field(parts[0])
+        mount_point = _unescape_mount_field(parts[1])
+        fstype = parts[2]
+        options = parts[3].split(",") if len(parts) > 3 else []
+        if not spec.startswith(("UUID=", "LABEL=", "PARTUUID=", "PARTLABEL=", "/dev/")):
+            continue
+        if fstype in ("swap", "none") or not mount_point.startswith("/"):
+            continue
+        if "noauto" in options or mount_point in mounted_points:
+            continue
+        result.append({
+            "mount_point": mount_point,
+            "fstype": fstype,
+            "present": fstab_device_present(spec),
+        })
+    return result
 
 def _unescape_mount_field(value: str) -> str:
     """/proc/mounts octal-escapes spaces/tabs/newlines/backslashes (\\040 etc.)."""
@@ -1487,6 +1546,11 @@ async def get_dashboard_metrics():
                 }
             except Exception: pass
 
+    try:
+        unmounted_drives = read_unmounted_fstab_drives({m["mount_point"] for m in mounts})
+    except Exception:
+        unmounted_drives = []
+
 # --- WireGuard / Tailscale / qBittorrent / Jellyfin telemetry ---
     # All of this now comes straight from the caches populated by
     # update_service_telemetry_loop() instead of spawning `wg`/`tailscale`
@@ -1511,6 +1575,7 @@ async def get_dashboard_metrics():
         "cpu_cores": cpu_cores,
         "ram_percent": ram,
         "disks": disks_payload,
+        "unmounted_drives": unmounted_drives,
 	"wireguard": wg_data,
         "tailscale": ts_data,
         "qbittorrent": qb_data,
@@ -1536,19 +1601,47 @@ async def control_unmount(payload: UnmountRequest):
     # Plain umount only — no -f/-l. If something is using the drive (Jellyfin,
     # qBittorrent, Samba...) it fails with "target is busy" instead of risking
     # data loss. Exec list, no shell. `-n` makes sudo fail fast, not prompt.
-    proc = await asyncio.create_subprocess_exec(
-        "sudo", "-n", "umount", "--", payload.mount_point,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-    )
-    try:
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=UNMOUNT_TIMEOUT)
-    except asyncio.TimeoutError:
-        proc.kill()
-        raise HTTPException(status_code=504, detail="Unmount timed out — check the server directly")
+    if _mount_lock.locked():
+        raise HTTPException(status_code=409, detail="A mount or unmount is already running")
+    async with _mount_lock:
+        proc = await asyncio.create_subprocess_exec(
+            "sudo", "-n", "umount", "--", payload.mount_point,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        try:
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=UNMOUNT_TIMEOUT)
+        except asyncio.TimeoutError:
+            proc.kill()
+            raise HTTPException(status_code=504, detail="Unmount timed out — check the server directly")
     if proc.returncode != 0:
         msg = stderr.decode(errors="replace").strip() or f"umount exited with code {proc.returncode}"
         raise HTTPException(status_code=409, detail=msg)
     return {"status": "success", "mount_point": payload.mount_point}
+
+@app.post("/api/control/mount-all")
+async def control_mount_all():
+    """Runs `mount -a`: mounts every /etc/fstab entry that isn't mounted yet
+    (noauto entries are skipped by mount itself). Nothing from the client
+    reaches the command, so there's nothing to inject; it's idempotent, so
+    clicking it with everything already mounted is a harmless no-op."""
+    if _mount_lock.locked():
+        raise HTTPException(status_code=409, detail="A mount or unmount is already running")
+    async with _mount_lock:
+        proc = await asyncio.create_subprocess_exec(
+            "sudo", "-n", "mount", "-a",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=MOUNT_ALL_TIMEOUT)
+        except asyncio.TimeoutError:
+            proc.kill()
+            raise HTTPException(status_code=504, detail="Mount timed out — check the server directly")
+    msg = "\n".join(t for t in (out.decode(errors="replace").strip(), err.decode(errors="replace").strip()) if t)
+    if proc.returncode == 0:
+        return {"status": "success", "message": msg}
+    if proc.returncode == 64:   # mount(8): some filesystems mounted, some failed
+        return {"status": "partial", "message": msg or "Some drives failed to mount"}
+    raise HTTPException(status_code=409, detail=msg or f"mount exited with code {proc.returncode}")
 
 @app.get("/api/network/public-ip")
 async def get_public_ip():

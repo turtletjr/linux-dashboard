@@ -241,7 +241,16 @@
                                 <div id="primary-ram-bar" class="bg-indigo-500 h-full transition-all duration-500" style="width: 0%"></div>
                             </div>
                         </div>
-                        <div id="primary-disks" class="pt-2 space-y-3 border-t border-slate-700/50 mt-3 grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1"></div>
+                        <div class="flex items-center justify-between gap-2 border-t border-slate-700/50 mt-3 pt-2">
+                            <div class="min-w-0 flex flex-col">
+                                <span class="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Drives</span>
+                                <span id="unmounted-note" class="hidden text-[10px] text-amber-400 truncate"></span>
+                            </div>
+                            <button id="mount-all-btn" class="shrink-0 bg-slate-800 hover:bg-emerald-600/20 border border-slate-700 hover:border-emerald-500 text-slate-300 hover:text-emerald-300 px-2.5 py-1 rounded text-[10px] font-sans font-semibold cursor-pointer flex items-center gap-1.5 transition disabled:opacity-50 disabled:cursor-wait" title="Mount every drive listed in /etc/fstab that isn't mounted yet">
+                                <i data-lucide="hard-drive-download" class="w-3.5 h-3.5"></i> Mount All
+                            </button>
+                        </div>
+                        <div id="primary-disks" class="pt-2 space-y-3 mt-1 grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1"></div>
                     </div>
                 </div>
 
@@ -491,7 +500,9 @@
         // inline JS this way.
         document.addEventListener('click', (e) => {
             const btn = e.target.closest('[data-unmount]');
-            if (btn) unmountDrive(decodeURIComponent(btn.dataset.unmount), btn);
+            if (btn) { unmountDrive(decodeURIComponent(btn.dataset.unmount), btn); return; }
+            const mountBtn = e.target.closest('#mount-all-btn');
+            if (mountBtn) mountAll(mountBtn);
         });
 
         async function unmountDrive(mountPoint, btn) {
@@ -513,6 +524,29 @@
                 alert('Unmount request failed — check your connection.');
             }
             updateDashboard();   // card disappears on success; button re-renders on failure
+        }
+
+        async function mountAll(btn) {
+            if (btn.disabled) return;
+            const original = btn.innerHTML;
+            btn.disabled = true;
+            btn.textContent = 'Mounting...';
+            try {
+                const res = await fetch('/api/control/mount-all', { method: 'POST' });
+                const body = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    alert(`Mount failed: ${body.detail || res.status}`);
+                } else if (body.status === 'partial') {
+                    alert(`Some drives mounted, but not all:\n\n${body.message}`);
+                }
+            } catch (e) {
+                console.error("Mount request dropped:", e);
+                alert('Mount request failed — check your connection.');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = original;
+            }
+            updateDashboard();   // newly mounted drives appear as cards right away
         }
 
         async function controlPihole(action, duration = 0) {
@@ -787,6 +821,24 @@ async function toggleServiceState(service, action) {
                         if (ds.data.length > maxDataPoints) ds.data.shift();
                     });
                     ioChart.update();
+                }
+
+                // Drives listed in /etc/fstab that aren't mounted right now (what Mount All will try).
+                const unmountedNote = document.getElementById('unmounted-note');
+                const mountAllBtn = document.getElementById('mount-all-btn');
+                const unmounted = data.unmounted_drives || [];
+                if (unmountedNote) {
+                    if (unmounted.length > 0) {
+                        unmountedNote.textContent = 'Not mounted: ' + unmounted.map(u => u.mount_point + (u.present ? '' : ' (not connected)')).join(', ');
+                        unmountedNote.classList.remove('hidden');
+                    } else {
+                        unmountedNote.classList.add('hidden');
+                    }
+                }
+                if (mountAllBtn) {
+                    // Highlight the button only when there is something it can actually mount.
+                    mountAllBtn.classList.toggle('ring-1', unmounted.some(u => u.present));
+                    mountAllBtn.classList.toggle('ring-amber-500/60', unmounted.some(u => u.present));
                 }
 
                 const diskContainer = document.getElementById('primary-disks');
