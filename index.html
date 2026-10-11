@@ -1,0 +1,1231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Server Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.3/dist/index.global.js"></script>
+    <script src="https://unpkg.com/lucide@1.47.0/dist/umd/lucide.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js"></script>
+
+    <style>
+      /* Custom Widget Card Styling to replace Gridstack styles */
+      .widget-card {
+        background-color: rgb(30, 41, 59); /* bg-slate-800 */
+        border: 1px solid rgb(51, 65, 85); /* border-slate-700 */
+        border-radius: 0.75rem; /* rounded-xl */
+        padding: 1.25rem; /* p-5 */
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        display: flex;
+        flex-direction: column;
+        overflow: auto;
+      }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-100 font-sans min-h-screen p-6">
+
+    <div class="max-w-[90rem] mx-auto"> 
+        
+        <header class="mb-8 border-b border-slate-700 pb-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+            <h1 class="text-2xl font-bold tracking-tight text-emerald-400 flex items-center gap-3 shrink-0">
+                <i data-lucide="server" class="w-7 h-7"></i> GreenPlanet Dashboard
+            </h1>
+            
+            <div class="flex flex-wrap gap-2.5 items-center w-full sm:w-auto sm:justify-end text-xs font-mono">
+                <span class="bg-slate-800 px-3 py-1.5 rounded-lg border border-slate-700 flex items-center gap-2 text-sky-400">
+                    <i data-lucide="download" class="w-3.5 h-3.5"></i> <span id="speed-down">0 B/s</span>
+                </span>
+                <span class="bg-slate-800 px-3 py-1.5 rounded-lg border border-slate-700 flex items-center gap-2 text-indigo-400">
+                    <i data-lucide="upload" class="w-3.5 h-3.5"></i> <span id="speed-up">0 B/s</span>
+                </span>
+            </div>
+        </header>
+        <!-- Main Body: 25% | 50% | 25% -->
+        <div class="grid grid-cols-1 lg:grid-cols-4 gap-6 mb-6">
+            
+            <!-- Left Column: 25% -->
+            <div class="lg:col-span-1 flex flex-col gap-6">
+            <!-- Hardware Controls Widget -->
+            <div class="widget-card justify-between min-h-[160px]">
+                <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-2">
+                    <i data-lucide="sliders" class="w-4 h-4 text-amber-500"></i> Hardware Controls
+                </h2>
+                <div class="grid grid-cols-2 gap-3.5 flex-1 items-center">
+                    <button onclick="triggerPowerAction('reboot')" class="bg-slate-900/60 hover:bg-amber-600/20 border border-slate-700 hover:border-amber-500 text-slate-200 hover:text-amber-400 py-3 rounded-xl transition-all text-xs font-semibold flex flex-col items-center justify-center gap-1.5 cursor-pointer h-full min-h-[80px]">
+                        <i data-lucide="rotate-cw" class="w-4 h-4"></i> Reboot
+                    </button>
+                    <button onclick="triggerPowerAction('shutdown')" class="bg-slate-900/60 hover:bg-rose-600/20 border border-slate-700 hover:border-rose-500 text-slate-200 hover:text-rose-400 py-3 rounded-xl transition-all text-xs font-semibold flex flex-col items-center justify-center gap-1.5 cursor-pointer h-full min-h-[80px]">
+                        <i data-lucide="power" class="w-4 h-4"></i> Shutdown
+                    </button>
+                </div>
+            </div>
+            <!-- Package Manager Widget -->
+            <div class="widget-card justify-between min-h-[160px]">
+                <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-2">
+                    <i data-lucide="refresh-cw" class="w-4 h-4 text-emerald-400"></i> Package Manager
+                    <span id="pkg-reboot-badge" class="hidden ml-auto text-[9px] px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-400 border border-rose-500/20 normal-case">Reboot required</span>
+                </h2>
+                <div class="space-y-3 flex-1 flex flex-col justify-center">
+                    <div class="flex justify-between items-center bg-slate-900/50 p-3 rounded-lg border border-slate-700/50">
+                        <div>
+                            <div class="text-xs text-slate-400">Available Updates</div>
+                            <div id="update-count" class="text-xl font-bold font-mono mt-0.5 text-slate-200">0</div>
+                        </div>
+                        <button onclick="triggerUpdateCheck()" id="btn-check" class="bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs px-3 py-2 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer">
+                            <i data-lucide="search" class="w-3.5 h-3.5"></i> Check
+                        </button>
+                    </div>
+
+                    <!-- Live progress (visible only while an operation runs) -->
+                    <div id="pkg-progress-box" class="hidden bg-slate-900/50 p-3 rounded-lg border border-sky-500/30 flex flex-col gap-2">
+                        <div class="flex justify-between text-[11px] font-mono">
+                            <span id="pkg-progress-label" class="text-sky-400">Working...</span>
+                            <span id="pkg-progress-pct" class="text-slate-200 font-bold">0%</span>
+                        </div>
+                        <div class="w-full bg-slate-950 h-2 rounded-full overflow-hidden border border-slate-800">
+                            <div id="pkg-progress-bar" class="bg-sky-500 h-full transition-all duration-500" style="width:0%"></div>
+                        </div>
+                        <div id="pkg-current" class="text-[10px] font-mono text-slate-400 truncate"></div>
+                        <pre id="pkg-log" class="max-h-24 overflow-y-auto text-[9px] leading-tight font-mono text-slate-500 bg-slate-950/60 p-1.5 rounded"></pre>
+                    </div>
+
+                    <div id="upgrade-box" class="hidden bg-slate-900/50 p-3 rounded-lg border border-amber-500/30 flex flex-col gap-2">
+                        <span class="text-[11px] text-amber-400 font-medium">Packages ready for deployment:</span>
+                        <div id="package-list-container" class="max-h-28 overflow-y-auto space-y-1 font-mono text-[11px] pr-1"></div>
+                        <button onclick="runPackageOperation('upgrade')" id="btn-upgrade" class="w-full bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white font-medium text-xs py-2 rounded-md transition-colors flex items-center justify-center gap-1.5 cursor-pointer mt-1">
+                            <i data-lucide="chevrons-up" class="w-3.5 h-3.5"></i> Upgrade System Packages
+                        </button>
+                    </div>
+
+                    <!-- Only shown when plain `upgrade` is holding packages back -->
+                    <div id="pkg-keptback-box" class="hidden bg-slate-900/50 p-3 rounded-lg border border-violet-500/30 flex flex-col gap-2">
+                        <span class="text-[11px] text-violet-400 font-medium">Held back by <code>upgrade</code>:</span>
+                        <div id="pkg-keptback-list" class="font-mono text-[11px] text-slate-300 break-words"></div>
+                        <div id="pkg-fu-removes" class="hidden font-mono text-[10px] text-rose-400"></div>
+                        <button onclick="runPackageOperation('full-upgrade')" id="btn-full-upgrade" class="w-full bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white font-medium text-xs py-2 rounded-md transition-colors cursor-pointer">
+                            Full Upgrade
+                        </button>
+                    </div>
+
+                    <!-- Only shown when autoremove has something to clean -->
+                    <div id="pkg-autoremove-box" class="hidden bg-slate-900/50 p-3 rounded-lg border border-slate-600/50 flex items-center justify-between gap-2">
+                        <div class="text-[11px] text-slate-400">Unused packages: <span id="pkg-autoremove-count" class="text-slate-200 font-bold font-mono">0</span></div>
+                        <button onclick="runPackageOperation('autoremove')" id="btn-autoremove" class="bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white text-xs px-3 py-1.5 rounded-md cursor-pointer">Autoremove</button>
+                    </div>
+
+                    <div id="pkg-last-result" class="hidden text-[10px] font-mono"></div>
+                </div>
+                <div class="text-[10px] font-mono text-slate-500 text-right mt-2">Last scan: <span id="last-checked">Never</span></div>
+            </div>
+                <!-- Core Services Daemon Widget -->
+                <div class="widget-card">
+                    <h2 class="text-xs font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-1.5">
+                        <span class="w-1.5 h-1.5 bg-emerald-400 rounded-full"></span> Core Services Daemon
+                    </h2>
+                    <div id="primary-services-box" class="space-y-1.5 max-h-[22rem] overflow-y-auto pr-1"></div>
+                </div>
+
+                <!-- Network Protection (Pi-hole) Widget -->
+                <div class="widget-card">
+                    <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-4 flex items-center gap-2">
+                        <i data-lucide="shield" class="w-4 h-4 text-sky-400"></i> Network Protection
+                    </h2>
+                    <div class="grid grid-cols-2 gap-3 font-mono">
+                        <div class="bg-slate-900/40 p-3 rounded-lg border border-slate-700/40">
+                            <div class="text-[10px] text-slate-400 font-sans">Queries (Today)</div>
+                            <div id="pi-queries" class="text-sm font-bold text-slate-200 mt-1">--</div>
+                        </div>
+                        <div class="bg-slate-900/40 p-3 rounded-lg border border-slate-700/40">
+                            <div class="text-[10px] text-slate-400 font-sans">Blocked (Today)</div>
+                            <div id="pi-blocked" class="text-sm font-bold text-rose-400 mt-1">--</div>
+                        </div>
+                        <div class="bg-slate-900/40 p-3 rounded-lg border border-slate-700/40 col-span-2 flex justify-between items-center">
+                            <div>
+                                <div class="text-[10px] text-slate-400 font-sans">Block Percentage</div>
+                                <div id="pi-percent" class="text-sm font-bold text-sky-400 mt-0.5">--</div>
+                            </div>
+                            <div id="pi-status-badge" class="text-[10px] px-2 py-0.5 font-sans font-semibold rounded bg-slate-700 text-slate-400">Offline</div>
+                        </div>
+                    </div>
+
+                    <div class="mt-4 pt-3 border-t border-slate-700/40 flex items-center justify-between gap-2">
+                        <button onclick="controlPihole('enable')" class="flex-1 bg-emerald-600/10 hover:bg-emerald-600/30 border border-emerald-500/20 text-emerald-400 py-1.5 rounded-lg text-[10px] font-mono transition-colors cursor-pointer text-center">
+                            Enable
+                        </button>
+                        <button onclick="controlPihole('disable', 300)" class="flex-1 bg-amber-600/10 hover:bg-amber-600/30 border border-amber-500/20 text-amber-400 py-1.5 rounded-lg text-[10px] font-mono transition-colors cursor-pointer text-center">
+                            -5 Min
+                        </button>
+                        <button onclick="controlPihole('disable', 0)" class="flex-1 bg-rose-600/10 hover:bg-rose-600/30 border border-rose-500/20 text-rose-400 py-1.5 rounded-lg text-[10px] font-mono transition-colors cursor-pointer text-center">
+                            Disable
+                        </button>
+                    </div>
+
+                    <div class="mt-4 pt-3 border-t border-slate-700/40">
+                        <div class="text-[10px] uppercase font-mono tracking-wider text-slate-400 mb-2 flex items-center gap-1.5">
+                            <i data-lucide="ban" class="w-3 h-3 text-rose-400"></i> Heavy Ad Offenders
+                        </div>
+                        <div class="space-y-1.5 font-mono text-[11px]" id="pi-top-blocked-list">
+                            <div class="text-slate-500 italic text-[10px] py-1">Awaiting DNS interceptions...</div>
+                        </div>
+                    </div>
+                </div>
+				<!-- Pi-hole Update Widget -->
+                <div class="widget-card">
+                    <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-2">
+                        <i data-lucide="shield" class="w-4 h-4 text-emerald-400"></i> Pi-hole Updates
+                    </h2>
+                    <div id="pihole-updates-container" class="space-y-3">
+                        <div class="flex justify-center items-center bg-slate-900/50 p-3 rounded-lg border border-slate-700/50 text-sm">
+                            <span class="text-slate-400">Checking for updates...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Center Column: 50% -->
+            <div class="lg:col-span-2 flex flex-col gap-6">
+                <!-- System Compute Timeline Chart Widget -->
+                <div class="widget-card">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase flex items-center gap-2">
+                            <i data-lucide="activity" class="w-4 h-4 text-emerald-400"></i> System Compute Timeline
+                        </h2>
+                        <span class="text-[11px] font-mono bg-slate-900 px-2.5 py-1 rounded-lg text-slate-400 border border-slate-700/50 flex items-center gap-1.5 shrink-0">
+                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                            Uptime: <span id="primary-uptime" class="text-slate-300 font-bold">--</span>
+                        </span>
+                    </div>
+                    <div class="h-64 relative">
+                        <canvas id="metricsChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- I/O Throughput Chart Widget -->
+                <div class="widget-card">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase flex items-center gap-2">
+                            <i data-lucide="arrow-up-down" class="w-4 h-4 text-sky-400"></i> I/O Throughput History (KB/s)
+                        </h2>
+                    </div>
+                    <div class="h-48 relative">
+                        <canvas id="ioChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- System Hardware Widget -->
+                <div class="widget-card">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="font-bold text-emerald-400 flex items-center gap-1.5 text-sm">
+                            <i data-lucide="cpu" class="w-4 h-4"></i> System Hardware
+                        </h3>
+                        <span id="primary-temp" class="text-xs font-mono bg-slate-900 px-2 py-0.5 rounded text-slate-400 border border-slate-700/50">--°C</span>
+                    </div>
+                    <div class="space-y-4 text-xs">
+                        <div>
+                            <div class="flex justify-between font-mono text-[11px] mb-1">
+                                <span class="text-slate-400">CPU Compute Overhead</span>
+                                <span id="primary-cpu-txt" class="font-bold text-slate-200">0%</span>
+                            </div>
+                            <div class="w-full bg-slate-900 h-2 rounded-full overflow-hidden border border-slate-700/30 mb-3">
+                                <div id="primary-cpu-bar" class="bg-emerald-500 h-full transition-all duration-500" style="width: 0%"></div>
+                            </div>
+                            
+                            <div id="cpu-cores-container" class="grid grid-cols-2 gap-2 text-[10px] font-mono pt-1 pb-2"></div>
+                        </div>
+                        <div>
+                            <div class="flex justify-between font-mono text-[11px] mb-1">
+                                <span class="text-slate-400">RAM System Allocation</span>
+                                <span id="primary-ram-txt" class="font-bold text-slate-200">0%</span>
+                            </div>
+                            <div class="w-full bg-slate-900 h-2 rounded-full overflow-hidden border border-slate-700/30">
+                                <div id="primary-ram-bar" class="bg-indigo-500 h-full transition-all duration-500" style="width: 0%"></div>
+                            </div>
+                        </div>
+                        <div id="primary-disks" class="pt-2 space-y-3 border-t border-slate-700/50 mt-3 grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1"></div>
+                    </div>
+                </div>
+
+                <!-- Process Monitor Widget -->
+                <div class="widget-card">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase flex items-center gap-2">
+                            <i data-lucide="alert-triangle" class="w-4 h-4 text-amber-500"></i> Process Monitor
+                        </h2>
+                        <span class="text-[10px] font-mono text-slate-500">High CPU / Hung Processes</span>
+                    </div>
+                    <div id="process-monitor-box" class="space-y-1.5 max-h-[22rem] overflow-y-auto pr-1">
+                        <div class="text-slate-500 italic text-center py-4 text-xs">Scanning processes...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Column: 25% -->
+            <div class="lg:col-span-1 flex flex-col gap-6">
+            <!-- Active Streams (Jellyfin) Widget -->
+            <div class="widget-card justify-between min-h-[160px]">
+                <div class="flex items-center justify-between mb-3">
+                    <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase flex items-center gap-2">
+                        <i data-lucide="play-circle" class="w-4 h-4 text-purple-400"></i> Active Streams
+                    </h2>
+                </div>
+                <div id="jellyfin-activity-container" class="space-y-2 flex-1 overflow-y-auto max-h-[110px] pr-1"></div>
+                <div class="text-[10px] font-mono text-slate-500 text-right mt-2 border-t border-slate-700/40 pt-1">Server engine: <span id="jf-version">v--</span></div>
+            </div>
+				<!-- Public IP Widget -->
+                <div class="widget-card">
+                    <div class="flex justify-between items-center mb-3">
+                        <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase flex items-center gap-2">
+                            <i data-lucide="globe" class="w-4 h-4 text-sky-400"></i> Public IP
+                        </h2>
+                        <button onclick="refreshPublicIp()" id="public-ip-refresh-btn" class="text-slate-400 hover:text-sky-400 transition-colors cursor-pointer" title="Refresh now">
+                            <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+                        </button>
+                    </div>
+                    <div class="bg-slate-900/50 p-3 rounded-lg border border-slate-700/50 flex justify-center items-center">
+                        <span id="public-ip-address" class="text-lg font-bold font-mono text-slate-200 tracking-wider">--.---.---.---</span>
+                    </div>
+                    <div class="text-[10px] font-mono text-slate-500 text-right mt-2">Checked: <span id="public-ip-checked-at">Never</span></div>
+                </div>
+                <!-- Tunnel Routing Topology Widget -->
+                <div class="widget-card">
+                    <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-4 flex items-center gap-2">
+                        <i data-lucide="link" class="w-4 h-4 text-emerald-400"></i> Tunnel Routing Topology
+                    </h2>
+                    <div class="space-y-4 font-mono text-xs">
+                        <div class="border-b border-slate-700/50 pb-3">
+                            <div class="flex justify-between items-center mb-1.5">
+                                <span class="font-sans font-bold text-slate-300 text-[11px] flex items-center gap-1">
+                                    <span class="w-1.5 h-1.5 rounded-full bg-slate-500" id="wg-dot"></span> Windscribe (windscribe)
+                                </span>
+                                <span id="wg-status-badge" class="text-[10px] px-1.5 py-0.5 rounded font-sans font-bold uppercase bg-slate-700 text-slate-400">Off</span>
+                            </div>
+                            <div class="grid grid-cols-1 gap-y-1 text-[11px] text-slate-400">
+                                <div>Handshake: <span id="wg-handshake" class="text-slate-200">--</span></div>
+                                <div class="truncate">Endpt: <span id="wg-endpoint" class="text-slate-200">--</span></div>
+                                <div class="flex justify-between mt-0.5">
+                                    <span class="text-sky-400 flex items-center gap-0.5"><i data-lucide="arrow-down" class="w-3 h-3"></i> <span id="wg-rx">0 B</span></span>
+                                    <span class="text-indigo-400 flex items-center gap-0.5"><i data-lucide="arrow-up" class="w-3 h-3"></i> <span id="wg-tx">0 B</span></span>
+                                </div>
+                            </div>
+                            <div class="mt-2.5 pt-2.5 border-t border-slate-800/60">
+                                <div class="text-[10px] text-slate-500 font-sans mb-1.5">Active location: <span id="wg-active-location" class="text-slate-300 font-semibold">--</span></div>
+                                <div class="flex gap-1.5">
+                                    <select id="wg-location-select" class="flex-1 bg-slate-900 border border-slate-700 rounded-md text-[11px] text-slate-300 px-2 py-1.5 font-mono cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+                                        <option value="">Loading locations...</option>
+                                    </select>
+                                    <button onclick="switchWindscribeLocation()" id="wg-switch-btn" class="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-sans font-medium text-[10px] px-3 py-1.5 rounded-md transition-colors cursor-pointer whitespace-nowrap">
+                                        Switch
+                                    </button>
+                                </div>
+                                <div id="wg-switch-result" class="text-[10px] font-mono mt-1.5 hidden"></div>
+                            </div>
+                        </div>
+                        <div>
+                            <div class="flex justify-between items-center mb-1.5">
+                                <span class="font-sans font-bold text-slate-300 text-[11px] flex items-center gap-1">
+                                    <span class="w-1.5 h-1.5 rounded-full bg-slate-500" id="ts-dot"></span> Tailscale Mesh
+                                </span>
+                                <span id="ts-status-badge" class="text-[10px] px-1.5 py-0.5 rounded font-sans font-bold uppercase bg-slate-700 text-slate-400">Off</span>
+                            </div>
+                            <div class="grid grid-cols-1 gap-y-1 text-[11px] text-slate-400">
+                                <div class="truncate">Node IP: <span id="ts-ip" class="text-slate-300">--</span></div>
+                                <div class="flex justify-between">
+                                    <div>Peers: <span id="ts-peers" class="text-slate-200">0</span></div>
+                                    <div><span id="ts-exit-status" class="text-slate-500">No Exit</span></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- BitTorrent Engine Widget -->
+                <div class="widget-card">
+                    <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-4 flex items-center gap-2">
+                        <i data-lucide="download-cloud" class="w-4 h-4 text-cyan-400"></i> BitTorrent Engine
+                    </h2>
+                    <div class="space-y-4 font-mono text-xs">
+                        <div>
+                            <div class="flex justify-between items-center mb-1.5">
+                                <span class="font-sans font-bold text-slate-300 text-[11px] flex items-center gap-1">
+                                    <span class="w-1.5 h-1.5 rounded-full bg-slate-500" id="qb-dot"></span> qBittorrent Client
+                                </span>
+                                <span id="qb-status-badge" class="text-[10px] px-1.5 py-0.5 rounded font-sans font-bold uppercase bg-slate-700 text-slate-400">Off</span>
+                            </div>
+                            <div class="grid grid-cols-1 gap-y-1 text-[11px] text-slate-400">
+                                <div>Active Torrents: <span id="qb-active" class="text-slate-200">0</span></div>
+                                <div class="flex justify-between mt-0.5">
+                                    <span class="text-cyan-400 flex items-center gap-0.5"><i data-lucide="arrow-down" class="w-3 h-3"></i> <span id="qb-dl">0 B/s</span></span>
+                                    <span class="text-indigo-400 flex items-center gap-0.5"><i data-lucide="arrow-up" class="w-3 h-3"></i> <span id="qb-ul">0 B/s</span></span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        const maxDataPoints = 25;
+        const timelineLabels = Array(maxDataPoints).fill('');
+        const primaryCpuData = Array(maxDataPoints).fill(0);
+        const primaryRamData = Array(maxDataPoints).fill(0);
+        
+        const ctx = document.getElementById('metricsChart').getContext('2d');
+        const metricsChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: timelineLabels,
+                datasets: [
+                    {
+                        label: 'CPU Usage %',
+                        data: primaryCpuData,
+                        borderColor: '#10b981',
+                        borderWidth: 2.5,
+                        pointRadius: 0,
+                        fill: true,
+                        backgroundColor: 'rgba(16, 185, 129, 0.02)',
+                        tension: 0.3
+                    },
+                    {
+                        label: 'RAM Usage %',
+                        data: primaryRamData,
+                        borderColor: '#6366f1',
+                        borderWidth: 2.5,
+                        pointRadius: 0,
+                        fill: true,
+                        backgroundColor: 'rgba(99, 102, 241, 0.02)',
+                        tension: 0.3
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { 
+                    legend: { 
+                        display: true,
+                        labels: { color: '#94a3b8', font: { size: 10, family: 'sans-serif' } }
+                    } 
+                },
+                scales: {
+                    x: { display: false },
+                    y: { min: 0, max: 100, ticks: { color: '#64748b', font: { size: 9, family: 'monospace' }, stepSize: 25 }, grid: { color: 'rgba(51, 65, 85, 0.2)' } }
+                }
+            }
+        });
+
+        const ioCtx = document.getElementById('ioChart').getContext('2d');
+        const ioChart = new Chart(ioCtx, {
+            type: 'line',
+            data: {
+                labels: Array(maxDataPoints).fill(''),
+                datasets: [
+                    {
+                        label: 'Download (KB/s)',
+                        data: Array(maxDataPoints).fill(0),
+                        borderColor: '#38bdf8',
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        tension: 0.3
+                    },
+                    {
+                        label: 'Upload (KB/s)',
+                        data: Array(maxDataPoints).fill(0),
+                        borderColor: '#818cf8',
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        tension: 0.3
+                    },
+                    {
+                        label: 'Disk Read (KB/s)',
+                        data: Array(maxDataPoints).fill(0),
+                        borderColor: '#10b981',
+                        borderWidth: 1.5,
+                        borderDash: [4, 4],
+                        pointRadius: 0,
+                        tension: 0.3
+                    },
+                    {
+                        label: 'Disk Write (KB/s)',
+                        data: Array(maxDataPoints).fill(0),
+                        borderColor: '#f59e0b',
+                        borderWidth: 1.5,
+                        borderDash: [4, 4],
+                        pointRadius: 0,
+                        tension: 0.3
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { 
+                    legend: { 
+                        display: true, 
+                        labels: { color: '#94a3b8', font: { size: 10, family: 'sans-serif' } } 
+                    } 
+                },
+                scales: {
+                    x: { display: false },
+                    y: { min: 0, ticks: { color: '#64748b', font: { size: 9, family: 'monospace' } }, grid: { color: 'rgba(51, 65, 85, 0.2)' } }
+                }
+            }
+        });
+
+        function escapeHtml(str) {
+            return String(str ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        }
+
+        function formatBytes(bytes) {
+            if (bytes == null || isNaN(bytes)) return '--';
+            const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+            let i = 0, v = Number(bytes);
+            while (v >= 1000 && i < units.length - 1) { v /= 1000; i++; }   // decimal units, matching how drives are marketed
+            return `${v >= 100 || i === 0 ? v.toFixed(0) : v.toFixed(1)} ${units[i]}`;
+        }
+
+        // Delegated click handler: disk cards are re-rendered every 2s, so
+        // per-element listeners would be lost; mount paths also stay out of
+        // inline JS this way.
+        document.addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-unmount]');
+            if (btn) unmountDrive(decodeURIComponent(btn.dataset.unmount), btn);
+        });
+
+        async function unmountDrive(mountPoint, btn) {
+            if (!confirm(`Unmount "${mountPoint}"?\n\nAnything using this drive (Jellyfin, qBittorrent, Samba shares) must stop first, or the unmount will be refused as busy. The drive stays unmounted until it is remounted on the server or the server reboots.`)) return;
+            btn.disabled = true;
+            btn.innerText = 'Unmounting...';
+            try {
+                const res = await fetch('/api/control/unmount', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mount_point: mountPoint })
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    alert(`Unmount failed: ${err.detail || res.status}`);
+                }
+            } catch (e) {
+                console.error("Unmount dispatch dropped:", e);
+                alert('Unmount request failed — check your connection.');
+            }
+            updateDashboard();   // card disappears on success; button re-renders on failure
+        }
+
+        async function controlPihole(action, duration = 0) {
+            try {
+                await fetch('/api/control/pihole', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action, duration })
+                });
+                updatePiholeData();
+            } catch (e) { console.error("Control instruction execution drop:", e); }
+        }
+
+        async function triggerPowerAction(action) {
+            if (!confirm(`Execute strict global system ${action}?`)) return;
+            try {
+                await fetch('/api/control/power', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action })
+                });
+            } catch (e) { console.error("Power matrix control drop:", e); }
+        }
+
+        let pkgPollTimer = null;
+        let lastPkgState = null;
+        function schedulePkgPoll(ms) { clearTimeout(pkgPollTimer); pkgPollTimer = setTimeout(updatePackagesSection, ms); }
+
+        async function triggerUpdateCheck() {
+            const btn = document.getElementById('btn-check');
+            btn.disabled = true;
+            btn.innerText = "Scanning...";
+            schedulePkgPoll(500);
+            try { await fetch('/api/packages/check', { method: 'POST' }); } catch (e) { console.error(e); }
+            schedulePkgPoll(100);
+        }
+
+        async function runPackageOperation(operation) {
+            const s = lastPkgState || {};
+            let msg = `Run apt-get ${operation}?`;
+            if (operation === 'full-upgrade' && s.full_upgrade_removes && s.full_upgrade_removes.length) {
+                msg += `\n\nThis will REMOVE:\n` + s.full_upgrade_removes.map(p => p.name).join('\n');
+            }
+            if (operation === 'autoremove' && s.autoremove) {
+                msg += `\n\nThis will remove:\n` + s.autoremove.map(p => p.name).join('\n');
+            }
+            if (!confirm(msg)) return;
+            try {
+                const res = await fetch('/api/packages/run', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ operation })
+                });
+                if (!res.ok) { const err = await res.json(); alert(err.detail || 'Failed to start'); }
+            } catch (e) { console.error("Package operation dispatch dropped:", e); }
+            schedulePkgPoll(300);
+        }
+
+async function toggleServiceState(service, action) {
+            try {
+                const res = await fetch('/api/control/service', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ service, action })
+                });
+                if (res.ok) updateServicesList();
+            } catch (e) { console.error("Daemon toggle dropped:", e); }
+        }
+
+        async function dispatchJellyfinCommand(sessionId, command) {
+            try {
+                const response = await fetch('/api/control/jellyfin', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        session_id: sessionId,
+                        command: command
+                    })
+                });
+                
+                if (response.ok) {
+                    updateDashboard();
+                } else {
+                    console.error("Failed to route Jellyfin control command");
+                }
+            } catch (e) {
+                console.error("Error dispatching Jellyfin command:", e);
+            }
+        }
+
+        async function dispatchSubtitleToggle(sessionId, btnEl) {
+            const originalClass = btnEl.className;
+            try {
+                const res = await fetch('/api/jellyfin/subtitles/toggle', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: sessionId })
+                });
+                const data = await res.json();
+                // Brief flash to confirm the action landed (or didn't), since
+                // this button has no persistent status text next to it anymore
+                btnEl.className = data.status === 'success'
+                    ? "bg-emerald-600 border border-emerald-500 text-white px-2.5 py-1 rounded transition-all cursor-pointer flex items-center justify-center min-w-[32px] min-h-[24px]"
+                    : "bg-rose-600 border border-rose-500 text-white px-2.5 py-1 rounded transition-all cursor-pointer flex items-center justify-center min-w-[32px] min-h-[24px]";
+                if (data.status !== 'success') {
+                    console.warn("Subtitle toggle:", data.message);
+                }
+            } catch (e) {
+                console.error("Error dispatching subtitle toggle:", e);
+            } finally {
+                setTimeout(() => { btnEl.className = originalClass; }, 1200);
+            }
+        }
+
+        async function refreshPublicIp() {
+            const ipEl = document.getElementById('public-ip-address');
+            const checkedEl = document.getElementById('public-ip-checked-at');
+            const btn = document.getElementById('public-ip-refresh-btn');
+            // Lucide replaces <i data-lucide="..."> with an <svg> on page load —
+            // by the time this is clickable, the icon is an <svg>, not an <i>.
+            const icon = btn.querySelector('svg, i');
+
+            btn.disabled = true;
+            if (icon) icon.classList.add('animate-spin');
+            try {
+                const res = await fetch('/api/network/public-ip');
+                const data = await res.json();
+                ipEl.innerText = data.public_ip;
+                checkedEl.innerText = data.checked_at;
+            } catch (e) {
+                ipEl.innerText = "Error";
+                console.error("Public IP refresh dropped:", e);
+            } finally {
+                btn.disabled = false;
+                if (icon) icon.classList.remove('animate-spin');
+            }
+        }
+
+        let windscribeLocationsLoaded = false;
+
+        async function loadWindscribeLocations() {
+            const select = document.getElementById('wg-location-select');
+            try {
+                const res = await fetch('/api/windscribe/locations');
+                const data = await res.json();
+                if (!data.locations || data.locations.length === 0) {
+                    select.innerHTML = `<option value="">No locations configured</option>`;
+                    return;
+                }
+                select.innerHTML = data.locations.map(loc => `<option value="${loc}">${loc}</option>`).join('');
+                windscribeLocationsLoaded = true;
+            } catch (e) {
+                select.innerHTML = `<option value="">Failed to load</option>`;
+                console.error("Windscribe locations fetch dropped:", e);
+            }
+        }
+
+        async function loadWindscribeStatus() {
+            const activeEl = document.getElementById('wg-active-location');
+            const select = document.getElementById('wg-location-select');
+            try {
+                const res = await fetch('/api/windscribe/status');
+                const data = await res.json();
+                activeEl.innerText = data.active_location || "(none)";
+                // Reflect the actual active location in the dropdown, once options exist
+                if (windscribeLocationsLoaded && data.active_location) {
+                    select.value = data.active_location;
+                }
+            } catch (e) {
+                activeEl.innerText = "unknown";
+                console.error("Windscribe status fetch dropped:", e);
+            }
+        }
+
+        async function switchWindscribeLocation() {
+            const select = document.getElementById('wg-location-select');
+            const btn = document.getElementById('wg-switch-btn');
+            const resultEl = document.getElementById('wg-switch-result');
+            const location = select.value;
+
+            if (!location) return;
+            if (!confirm(`Switch Windscribe to "${location}"? This briefly drops the tunnel while it reconnects, and auto-reverts if the new location doesn't get a handshake.`)) return;
+
+            select.disabled = true;
+            btn.disabled = true;
+            btn.innerText = "Switching...";
+            resultEl.classList.add('hidden');
+
+            try {
+                const res = await fetch('/api/windscribe/switch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ location })
+                });
+                const data = await res.json();
+
+                resultEl.classList.remove('hidden');
+                if (data.status === 'success') {
+                    resultEl.className = "text-[10px] font-mono mt-1.5 text-emerald-400";
+                    resultEl.innerText = `Connected to ${location}.`;
+                } else if (data.status === 'reverted') {
+                    resultEl.className = "text-[10px] font-mono mt-1.5 text-amber-400";
+                    resultEl.innerText = `"${location}" didn't connect — reverted to the previous location.`;
+                } else {
+                    resultEl.className = "text-[10px] font-mono mt-1.5 text-rose-400";
+                    resultEl.innerText = `Switch failed. Check the server logs for details.`;
+                }
+            } catch (e) {
+                resultEl.classList.remove('hidden');
+                resultEl.className = "text-[10px] font-mono mt-1.5 text-rose-400";
+                resultEl.innerText = "Request failed — check your connection.";
+                console.error("Windscribe switch dropped:", e);
+            } finally {
+                select.disabled = false;
+                btn.disabled = false;
+                btn.innerText = "Switch";
+                loadWindscribeStatus();
+            }
+        }
+
+        async function updateDashboard() {
+            try {
+                const response = await fetch('/api/dashboard/metrics');
+                if (!response.ok) throw new Error("Metrics engine out of bounds");
+                const data = await response.json();
+
+                if (document.getElementById('primary-uptime')) document.getElementById('primary-uptime').innerText = data.uptime;
+                if (document.getElementById('speed-down')) document.getElementById('speed-down').innerText = data.download_speed;
+                if (document.getElementById('speed-up')) document.getElementById('speed-up').innerText = data.upload_speed;
+                if (document.getElementById('primary-temp')) document.getElementById('primary-temp').innerText = data.temperature + "°C";
+
+                if (document.getElementById('primary-cpu-txt')) document.getElementById('primary-cpu-txt').innerText = data.cpu_percent + "%";
+                if (document.getElementById('primary-cpu-bar')) document.getElementById('primary-cpu-bar').style.width = data.cpu_percent + "%";
+                if (document.getElementById('primary-ram-txt')) document.getElementById('primary-ram-txt').innerText = data.ram_percent + "%";
+                if (document.getElementById('primary-ram-bar')) document.getElementById('primary-ram-bar').style.width = data.ram_percent + "%";
+
+                if (data.cpu_cores && data.cpu_cores.length > 0) {
+                    const coresContainer = document.getElementById('cpu-cores-container');
+                    if (coresContainer) {
+                        coresContainer.innerHTML = data.cpu_cores.map(core => `
+                            <div class="bg-slate-900/50 p-1.5 rounded border border-slate-700/40">
+                                <div class="flex justify-between text-[9px] mb-1">
+                                    <span class="text-slate-400">${core.core}</span>
+                                    <span class="text-slate-200 font-bold">${core.percent}%</span>
+                                </div>
+                                <div class="w-full bg-slate-950 h-1 rounded-full overflow-hidden">
+                                    <div class="bg-sky-500 h-full transition-all duration-300" style="width: ${core.percent}%"></div>
+                                </div>
+                            </div>
+                        `).join('');
+                    }
+                }
+
+                if (typeof metricsChart !== 'undefined') {
+                    metricsChart.data.datasets[0].data.push(data.cpu_percent);
+                    metricsChart.data.datasets[1].data.push(data.ram_percent);
+                    
+                    if (metricsChart.data.datasets[0].data.length > maxDataPoints) metricsChart.data.datasets[0].data.shift();
+                    if (metricsChart.data.datasets[1].data.length > maxDataPoints) metricsChart.data.datasets[1].data.shift();
+                    metricsChart.update();
+                }
+
+                if (typeof ioChart !== 'undefined' && data.network_telemetry && data.disk_io) {
+                    ioChart.data.datasets[0].data.push(data.network_telemetry.down_kbps);
+                    ioChart.data.datasets[1].data.push(data.network_telemetry.up_kbps);
+                    ioChart.data.datasets[2].data.push(data.disk_io.read_kbps);
+                    ioChart.data.datasets[3].data.push(data.disk_io.write_kbps);
+
+                    ioChart.data.datasets.forEach(ds => {
+                        if (ds.data.length > maxDataPoints) ds.data.shift();
+                    });
+                    ioChart.update();
+                }
+
+                const diskContainer = document.getElementById('primary-disks');
+                if (diskContainer) {
+                    const diskEntries = Object.entries(data.disks || {});
+                    if (diskEntries.length === 0) {
+                        diskContainer.innerHTML = `<div class="text-slate-500 italic text-xs py-2 md:col-span-2">No mounted drives.</div>`;
+                    } else {
+                        diskContainer.innerHTML = diskEntries.map(([mount, info]) => {
+                            const smart = info.smart || { healthy: null, temperature: null, life: null };
+                            let healthBadge;
+                            if (smart.healthy === true) {
+                                healthBadge = `<span class="text-[9px] px-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded font-sans font-semibold">SMART: OK</span>`;
+                            } else if (smart.healthy === false) {
+                                healthBadge = `<span class="text-[9px] px-1 bg-rose-500/10 text-rose-400 border border-rose-500/20 rounded font-sans font-semibold animate-pulse">SMART: FAIL</span>`;
+                            } else {
+                                healthBadge = `<span class="text-[9px] px-1 bg-slate-700/50 text-slate-400 border border-slate-600/30 rounded font-sans font-semibold">SMART: N/A</span>`;
+                            }
+
+                            const wearIndicator = smart.life != null ? `<span class="text-blue-400">Life: ${smart.life}%</span>` : '<span class="text-slate-500">Life: --</span>';
+                            const driveTempIndicator = smart.temperature != null ? `<span class="text-amber-500">${smart.temperature}°C</span>` : '<span class="text-slate-500">--°C</span>';
+
+                            const safeMount = escapeHtml(mount);
+                            const diskSizeTxt = info.disk_size_bytes ? ` &middot; ${formatBytes(info.disk_size_bytes)} disk` : '';
+                            const unmountBtn = info.can_unmount
+                                ? `<button data-unmount="${encodeURIComponent(mount)}" class="shrink-0 bg-slate-800 hover:bg-amber-600/30 border border-slate-700 hover:border-amber-500 text-slate-300 hover:text-amber-300 px-2 py-0.5 rounded text-[9px] font-sans font-semibold cursor-pointer flex items-center gap-1" title="Safely unmount ${safeMount}">
+                                       <i data-lucide="eject" class="w-3 h-3"></i> Unmount
+                                   </button>`
+                                : `<span class="shrink-0 text-[9px] text-slate-600 font-sans" title="System mount — protected">Protected</span>`;
+
+                            return `
+                                <div class="bg-slate-900/40 p-3 rounded-xl border border-slate-700/40 flex flex-col gap-2 font-mono text-[11px]">
+                                    <div class="flex justify-between items-center gap-2 border-b border-slate-700/30 pb-1.5">
+                                        <span class="truncate font-sans font-bold text-slate-200 text-xs" title="${safeMount}">${safeMount}</span>
+                                        ${unmountBtn}
+                                    </div>
+                                    <div class="text-[10px] text-slate-500 font-normal truncate" title="${escapeHtml(info.device)}">
+                                        ${escapeHtml(info.device)}${info.fstype ? ' &middot; ' + escapeHtml(info.fstype) : ''}${diskSizeTxt}
+                                    </div>
+                                    <div class="flex justify-between items-center text-[10px] text-slate-400">
+                                        <span>Space Used:</span>
+                                        <span class="text-slate-200 font-bold">${info.percent}%</span>
+                                    </div>
+                                    <div class="w-full bg-slate-950 h-2 rounded-full overflow-hidden border border-slate-800">
+                                        <div class="bg-emerald-500 h-full transition-all duration-500" style="width: ${info.percent}%"></div>
+                                    </div>
+                                    <div class="flex justify-between text-[10px] text-slate-400">
+                                        <span><span class="text-slate-200 font-bold">${formatBytes(info.used_bytes)}</span> used</span>
+                                        <span><span class="text-slate-200 font-bold">${formatBytes(info.free_bytes)}</span> free</span>
+                                        <span>of <span class="text-slate-200 font-bold">${formatBytes(info.total_bytes)}</span></span>
+                                    </div>
+                                    <div class="grid grid-cols-3 gap-1 text-center text-[9px] mt-1 pt-1 border-t border-slate-700/20">
+                                        <div class="flex flex-col bg-slate-900/60 p-1 rounded border border-slate-800/40"><span class="text-slate-500 text-[8px] uppercase font-sans">Status</span><div class="mt-0.5">${healthBadge}</div></div>
+                                        <div class="flex flex-col bg-slate-900/60 p-1 rounded border border-slate-800/40 justify-center"><span class="text-slate-500 text-[8px] uppercase font-sans">Temp</span><span class="font-bold mt-0.5">${driveTempIndicator}</span></div>
+                                        <div class="flex flex-col bg-slate-900/60 p-1 rounded border border-slate-800/40 justify-center"><span class="text-slate-500 text-[8px] uppercase font-sans">Health</span><span class="font-bold mt-0.5">${wearIndicator}</span></div>
+                                    </div>
+                                </div>
+                            `;
+                        }).join('');
+                        if (typeof lucide !== 'undefined') lucide.createIcons();
+                    }
+                }
+
+// --- WireGuard Updates ---
+                if (document.getElementById('wg-status-badge')) {
+                    const wgBadge = document.getElementById('wg-status-badge');
+                    wgBadge.innerText = data.wireguard.status === 'active' ? 'ACTIVE' : 'OFFLINE';
+                    wgBadge.className = data.wireguard.status === 'active' 
+                        ? "text-[10px] px-2 py-0.5 font-sans font-semibold rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                        : "text-[10px] px-2 py-0.5 font-sans font-semibold rounded bg-slate-500/10 text-slate-400 border border-slate-500/20";
+                }
+                if (document.getElementById('wg-handshake')) document.getElementById('wg-handshake').innerText = data.wireguard.handshake;
+                if (document.getElementById('wg-endpoint')) document.getElementById('wg-endpoint').innerText = data.wireguard.endpoint;
+                if (document.getElementById('wg-rx')) document.getElementById('wg-rx').innerText = data.wireguard.transfer_rx;
+                if (document.getElementById('wg-tx')) document.getElementById('wg-tx').innerText = data.wireguard.transfer_tx;
+
+                // --- Tailscale Updates ---
+                if (document.getElementById('ts-status-badge')) {
+                    const tsBadge = document.getElementById('ts-status-badge');
+                    tsBadge.innerText = data.tailscale.status === 'active' ? 'CONNECTED' : 'OFFLINE';
+                    tsBadge.className = data.tailscale.status === 'active'
+                        ? "text-[10px] px-2 py-0.5 font-sans font-semibold rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                        : "text-[10px] px-2 py-0.5 font-sans font-semibold rounded bg-slate-500/10 text-slate-400 border border-slate-500/20";
+                }
+                if (document.getElementById('ts-ip')) document.getElementById('ts-ip').innerText = data.tailscale.node_ip;
+                if (document.getElementById('ts-peers')) document.getElementById('ts-peers').innerText = data.tailscale.active_peers;
+                if (document.getElementById('ts-exit-status')) {
+                    const exitEl = document.getElementById('ts-exit-status');
+                    exitEl.innerText = data.tailscale.exit_node_active ? "Exit Active" : "No Exit";
+                    exitEl.className = data.tailscale.exit_node_active ? "text-emerald-400 font-bold" : "text-slate-500";
+                }
+                if (document.getElementById('qb-status-badge')) {
+                    const qbBadge = document.getElementById('qb-status-badge');
+                    qbBadge.innerText = data.qbittorrent.status === 'active' ? 'ONLINE' : 'OFFLINE';
+                    qbBadge.className = data.qbittorrent.status === 'active'
+                        ? "text-[10px] px-2 py-0.5 font-sans font-semibold rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                        : "text-[10px] px-2 py-0.5 font-sans font-semibold rounded bg-slate-500/10 text-slate-400 border border-slate-500/20";
+                }
+                if (document.getElementById('qb-active')) document.getElementById('qb-active').innerText = data.qbittorrent.active_torrents;
+                if (document.getElementById('qb-dl')) document.getElementById('qb-dl').innerText = data.qbittorrent.dl_speed;
+                if (document.getElementById('qb-ul')) document.getElementById('qb-ul').innerText = data.qbittorrent.ul_speed;
+
+                if (document.getElementById('jf-version')) document.getElementById('jf-version').innerText = data.jellyfin.version;
+                
+                const jfContainer = document.getElementById('jellyfin-activity-container');
+                if (jfContainer) {
+                    if (data.jellyfin.playing && data.jellyfin.playing.length > 0) {
+                        jfContainer.innerHTML = data.jellyfin.playing.map(session => {
+                            const imageUrl = session.now_playing_id 
+                                ? `/api/jellyfin/poster/${encodeURIComponent(session.now_playing_id)}` 
+                                : null;
+
+                            return `
+                            <div class="bg-slate-900/40 p-3 rounded-lg border border-purple-500/20 flex gap-3 font-mono text-[11px]">
+                                ${imageUrl ? `
+                                <div class="w-12 h-18 rounded bg-slate-800 overflow-hidden shrink-0 border border-slate-700 shadow flex items-center justify-center">
+                                    <img src="${imageUrl}" class="w-full h-full object-cover" onerror="this.remove()"/>
+                                </div>
+                                ` : ''}
+                                
+                                <div class="flex flex-col justify-between gap-1 flex-1 min-w-0">
+                                    <div class="flex justify-between items-start gap-2">
+                                        <div class="truncate text-slate-200 font-sans font-bold text-xs" title="${session.title}">${session.title}</div>
+                                        <span class="text-[9px] px-1.5 bg-purple-500/10 border border-purple-500/20 text-purple-400 rounded shrink-0">${session.client}</span>
+                                    </div>
+                                    <div class="text-slate-400 flex justify-between items-center text-[10px] mt-1">
+                                        <span>User: <strong class="text-slate-300 font-sans">${session.user}</strong></span>
+                                        <div class="flex gap-1.5 items-center">
+                                            <button onclick="dispatchSubtitleToggle('${session.session_id}', this)" class="bg-blue-600/20 hover:bg-blue-600 border border-blue-500/30 text-blue-300 hover:text-white px-2.5 py-1 rounded transition-all cursor-pointer flex items-center justify-center min-w-[32px] min-h-[24px]" title="Toggle English subtitles">
+                                                <i data-lucide="captions" class="w-3.5 h-3.5"></i>
+                                            </button>
+                                            <button onclick="dispatchJellyfinCommand('${session.session_id}', 'PlayPause')" class="bg-purple-600/20 hover:bg-purple-600 border border-purple-500/30 text-purple-300 hover:text-white px-2.5 py-1 rounded transition-all cursor-pointer flex items-center justify-center min-w-[32px] min-h-[24px]">
+                                                <i data-lucide="${session.is_paused ? 'play' : 'pause'}" class="w-3.5 h-3.5"></i>
+                                            </button>
+                                            <button onclick="dispatchJellyfinCommand('${session.session_id}', 'Stop')" class="bg-rose-600/20 hover:bg-rose-600 border border-rose-500/30 text-rose-400 hover:text-white px-2.5 py-1 rounded transition-all cursor-pointer text-[10px] font-sans font-medium h-[24px] flex items-center justify-center">
+                                                Stop
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            `;
+                        }).join('');
+                        if (typeof lucide !== 'undefined') lucide.createIcons();
+                    } else {
+                        jfContainer.innerHTML = `<div class="text-slate-500 italic text-center py-4 text-xs">No active content streams playing.</div>`;
+                    }
+                }
+
+            } catch (error) {
+                console.error("Dashboard primary pulse down:", error);
+            }
+        }
+
+        async function updateServicesList() {
+            try {
+                const res = await fetch('/api/dashboard/services');
+                const services = await res.json();
+                const container = document.getElementById('primary-services-box');
+
+                container.innerHTML = Object.entries(services).map(([svc, status]) => {
+                    let badgeClass = "bg-slate-900 text-slate-500 border border-slate-700/50";
+                    if (status === "active") badgeClass = "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20";
+                    else if (status === "failed") badgeClass = "bg-rose-500/10 text-rose-400 border border-rose-500/20 animate-pulse";
+
+                    return `
+                        <div class="flex justify-between items-center bg-slate-900/20 px-3 py-1.5 rounded-lg border border-slate-700/40 text-xs font-mono">
+                            <span class="text-slate-300 truncate pr-2">${svc}</span>
+                            <div class="flex items-center gap-2 shrink-0">
+                                <span class="text-[10px] px-1.5 py-0.5 font-bold uppercase rounded ${badgeClass}">${status}</span>
+                                <div class="flex gap-1">
+                                    <button onclick="toggleServiceState('${svc}', 'restart')" class="bg-slate-800 hover:bg-slate-700 text-slate-400 px-1.5 py-0.5 border border-slate-700 rounded text-[9px] cursor-pointer">Cycle</button>
+                                    <button onclick="toggleServiceState('${svc}', '${status === 'active' ? 'stop' : 'start'}')" class="bg-slate-800 hover:bg-slate-700 text-slate-400 px-1.5 py-0.5 border border-slate-700 rounded text-[9px] cursor-pointer">${status === 'active' ? 'Kill' : 'Boot'}</button>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            } catch (e) { console.error("Services status matrix query dropped:", e); }
+        }
+
+        async function updateProcessMonitor() {
+            try {
+                const res = await fetch('/api/processes');
+                const processes = await res.json();
+                const container = document.getElementById('process-monitor-box');
+
+                if (!processes || processes.length === 0) {
+                    container.innerHTML = `<div class="text-slate-500 italic text-center py-4 text-xs">No processes flagged — system nominal.</div>`;
+                    return;
+                }
+
+                container.innerHTML = processes.map(p => {
+                    let badge = `<span class="text-[9px] px-1.5 py-0.5 rounded font-sans font-semibold bg-slate-700 text-slate-400 whitespace-nowrap">Normal</span>`;
+                    if (p.is_hanging) {
+                        badge = `<span class="text-[9px] px-1.5 py-0.5 rounded font-sans font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20 animate-pulse whitespace-nowrap">Hanging</span>`;
+                    } else if (p.is_high_cpu) {
+                        badge = `<span class="text-[9px] px-1.5 py-0.5 rounded font-sans font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20 whitespace-nowrap">High CPU</span>`;
+                    }
+
+                    const restartBtn = p.service
+                        ? `<button onclick="controlProcess(${p.pid}, 'restart_service', '${p.name}')" class="bg-emerald-600/20 hover:bg-emerald-600 border border-emerald-500/30 text-emerald-300 hover:text-white px-1.5 py-0.5 rounded text-[9px] cursor-pointer whitespace-nowrap">Restart</button>`
+                        : '';
+
+                    return `
+                        <div class="flex items-center justify-between gap-2 bg-slate-900/30 px-2.5 py-1.5 rounded-lg border border-slate-700/40 text-[11px] font-mono">
+                            <div class="min-w-0 flex-1">
+                                <div class="flex items-center gap-2">
+                                    <span class="text-slate-200 font-sans font-bold truncate" title="${p.cmd}">${p.name}</span>
+                                    <span class="text-slate-500 text-[9px] shrink-0">PID ${p.pid}</span>
+                                </div>
+                                <div class="text-slate-400 text-[10px] mt-0.5">
+                                    CPU <span class="text-slate-200 font-bold">${p.cpu_percent}%</span> &middot;
+                                    MEM <span class="text-slate-200 font-bold">${p.mem_percent}%</span>
+                                </div>
+                            </div>
+                            <div class="flex items-center gap-1.5 shrink-0">
+                                ${badge}
+                                ${restartBtn}
+                                <button onclick="controlProcess(${p.pid}, 'terminate', '${p.name}')" class="bg-slate-800 hover:bg-amber-600/40 border border-slate-700 text-slate-400 hover:text-amber-300 px-1.5 py-0.5 rounded text-[9px] cursor-pointer">Term</button>
+                                <button onclick="controlProcess(${p.pid}, 'kill', '${p.name}')" class="bg-slate-800 hover:bg-rose-600 border border-slate-700 text-slate-400 hover:text-white px-1.5 py-0.5 rounded text-[9px] cursor-pointer">Kill</button>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            } catch (e) { console.error("Process monitor pulse dropped:", e); }
+        }
+
+        async function controlProcess(pid, action, name) {
+            const verbs = {
+                restart_service: `restart the service behind`,
+                terminate: `terminate (SIGTERM)`,
+                kill: `force-kill (SIGKILL)`
+            };
+            if (!confirm(`Are you sure you want to ${verbs[action]} "${name}" (PID ${pid})?`)) return;
+
+            try {
+                const res = await fetch('/api/control/process', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pid, action })
+                });
+                if (res.ok) {
+                    setTimeout(updateProcessMonitor, 1000);
+                } else {
+                    const err = await res.json();
+                    alert(`Action failed: ${err.detail || 'unknown error'}`);
+                }
+            } catch (e) { console.error("Process control dispatch dropped:", e); }
+        }
+
+        async function updatePackagesSection() {
+            let busy = false;
+            try {
+                const res = await fetch('/api/packages/status');
+                const d = await res.json();
+                lastPkgState = d;
+                busy = d.status !== 'idle';
+                const $ = id => document.getElementById(id);
+
+                $('update-count').innerText = d.available_packages;
+                $('last-checked').innerText = d.last_checked;
+                $('pkg-reboot-badge').classList.toggle('hidden', !d.reboot_required);
+
+                const checkBtn = $('btn-check');
+                checkBtn.disabled = busy;
+                checkBtn.innerText = d.status === 'checking' ? 'Scanning...' : 'Check';
+
+                // progress panel
+                const running = d.status === 'running';
+                $('pkg-progress-box').classList.toggle('hidden', !running);
+                if (running) {
+                    $('pkg-progress-label').innerText = `${d.operation} — ${d.phase || 'starting'}`;
+                    $('pkg-progress-pct').innerText = `${d.progress}%`;
+                    $('pkg-progress-bar').style.width = `${d.progress}%`;
+                    $('pkg-current').innerText = d.current_package || '';
+                    const logEl = $('pkg-log');
+                    logEl.innerText = (d.log_tail || []).join('\n');
+                    logEl.scrollTop = logEl.scrollHeight;
+                }
+
+                // action panels (hidden while busy so you can't double-fire)
+                const showUpgrade = d.available_packages > 0 && !busy;
+                $('upgrade-box').classList.toggle('hidden', !showUpgrade);
+                if (showUpgrade) {
+                    $('package-list-container').innerHTML = d.packages.map(pkg => `
+                        <div class="flex justify-between items-center bg-slate-950/60 px-2 py-1 rounded border border-slate-800">
+                            <span class="text-slate-200 font-bold truncate max-w-[120px]" title="${pkg.name}">${pkg.name}</span>
+                            <span class="text-[10px] text-slate-400"><span class="text-slate-500">${pkg.old_version}</span> ➔ <span class="text-emerald-400 font-bold">${pkg.new_version}</span></span>
+                        </div>`).join('');
+                }
+
+                const showKept = d.kept_back.length > 0 && !busy;
+                $('pkg-keptback-box').classList.toggle('hidden', !showKept);
+                if (showKept) {
+                    $('pkg-keptback-list').innerText = d.kept_back.join(', ');
+                    const rm = $('pkg-fu-removes');
+                    rm.classList.toggle('hidden', d.full_upgrade_removes.length === 0);
+                    rm.innerText = 'Would remove: ' + d.full_upgrade_removes.map(p => p.name).join(', ');
+                }
+
+                const showAuto = d.autoremove.length > 0 && !busy;
+                $('pkg-autoremove-box').classList.toggle('hidden', !showAuto);
+                $('pkg-autoremove-count').innerText = d.autoremove.length;
+
+                const r = d.last_result, rEl = $('pkg-last-result');
+                if (r && !busy) {
+                    rEl.className = `text-[10px] font-mono ${r.success ? 'text-emerald-400' : 'text-rose-400'}`;
+                    rEl.innerText = `${r.operation} ${r.success ? 'finished' : `failed (exit ${r.returncode})`} at ${r.finished_at}`;
+                } else {
+                    rEl.className = 'hidden text-[10px] font-mono';
+                }
+            } catch (e) {
+                console.error("Package status update dropped:", e);
+            } finally {
+                schedulePkgPoll(busy ? 1000 : 5000);   // fast while working, relaxed otherwise
+            }
+        }
+
+async function updatePiholeData() {
+            try {
+                const res = await fetch('/api/telemetry/pihole');
+                const data = await res.json();
+                const listContainer = document.getElementById('pi-top-blocked-list');
+                const badge = document.getElementById('pi-status-badge');
+
+                if (data.status === "active" || data.status === "disabled") {
+                    const isActive = data.status === "active";
+                    badge.className = `text-[10px] px-2 py-0.5 font-sans font-semibold rounded ${
+                        isActive 
+                            ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+                            : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                    }`;
+                    badge.innerText = isActive ? "Active" : "Disabled";
+                    
+                    document.getElementById('pi-queries').innerText = Number(data.dns_queries_today).toLocaleString();
+                    document.getElementById('pi-blocked').innerText = Number(data.ads_blocked_today).toLocaleString();
+                    document.getElementById('pi-percent').innerText = `${Number(data.ads_percentage_today).toFixed(1)}%`;
+
+                    const domains = data.top_sources;
+                    if (domains && Object.keys(domains).length > 0) {
+                        listContainer.innerHTML = Object.entries(domains).slice(0, 5).map(([domain, hits]) => `
+                            <div class="flex justify-between items-center bg-slate-900/30 px-2 py-1 border border-slate-700/20 rounded">
+                                <span class="truncate max-w-[140px] text-slate-300 text-[10px]" title="${domain}">${domain}</span>
+                                <span class="text-rose-400 font-bold text-[10px] shrink-0">${hits}</span>
+                            </div>
+                        `).join('');
+                    } else {
+                        listContainer.innerHTML = `<div class="text-slate-500 italic text-[10px] py-0.5">No active blocks logged</div>`;
+                    }
+                } else {
+                    badge.className = "text-[10px] px-2 py-0.5 font-sans font-semibold rounded bg-rose-500/10 text-rose-400 border border-rose-500/20";
+                    badge.innerText = "Offline";
+                    
+                    document.getElementById('pi-queries').innerText = "--";
+                    document.getElementById('pi-blocked').innerText = "--";
+                    document.getElementById('pi-percent').innerText = "--";
+                    listContainer.innerHTML = `<div class="text-slate-500 italic text-[10px] py-0.5">Engine offline</div>`;
+                }
+            } catch (e) { 
+                console.error("PiHole data cycle dropped:", e); 
+            }
+        }
+		
+
+        async function fetchPiholeUpdates() {
+            try {
+                const res = await fetch('/api/pihole/updates');
+                const data = await res.json();
+                const container = document.getElementById('pihole-updates-container');
+                
+                let html = `<div class="space-y-2 text-sm">
+                    <div class="flex justify-between items-center bg-slate-900/50 p-2 rounded border border-slate-700/50">
+                        <span class="text-slate-300">Core</span>
+                        <span class="${data.core.update_available ? 'text-amber-400' : 'text-slate-400'}">
+                            v${data.core.current} ${data.core.update_available ? `→ <span class="text-emerald-400">v${data.core.latest}</span>` : ''}
+                        </span>
+                    </div>
+                    <div class="flex justify-between items-center bg-slate-900/50 p-2 rounded border border-slate-700/50">
+                        <span class="text-slate-300">Web</span>
+                        <span class="${data.web.update_available ? 'text-amber-400' : 'text-slate-400'}">
+                            v${data.web.current} ${data.web.update_available ? `→ <span class="text-emerald-400">v${data.web.latest}</span>` : ''}
+                        </span>
+                    </div>
+                    <div class="flex justify-between items-center bg-slate-900/50 p-2 rounded border border-slate-700/50">
+                        <span class="text-slate-300">FTL</span>
+                        <span class="${data.ftl.update_available ? 'text-amber-400' : 'text-slate-400'}">
+                            v${data.ftl.current} ${data.ftl.update_available ? `→ <span class="text-emerald-400">v${data.ftl.latest}</span>` : ''}
+                        </span>
+                    </div>
+                </div>`;
+
+                if (data.has_updates) {
+                    html += `<button onclick="applyPiholeUpdate()" id="pihole-update-btn" class="mt-3 w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-2 px-4 rounded transition-colors text-sm">
+                                Apply Updates
+                             </button>`;
+                }
+                
+                container.innerHTML = html;
+            } catch (error) {
+                console.error('Error fetching Pi-hole updates:', error);
+            }
+        }
+
+        async function applyPiholeUpdate() {
+            const btn = document.getElementById('pihole-update-btn');
+            btn.disabled = true;
+            btn.innerText = "Applying Update... (This takes a few minutes)";
+            btn.classList.add('opacity-50', 'cursor-not-allowed');
+            
+            try {
+                await fetch('/api/pihole/apply-update', { method: 'POST' });
+                // Check versions again after 60 seconds once the update has had time to process
+                setTimeout(fetchPiholeUpdates, 60000); 
+            } catch (e) {
+                btn.innerText = "Update Request Failed";
+                btn.classList.remove('bg-emerald-600', 'hover:bg-emerald-500');
+                btn.classList.add('bg-red-600');
+            }
+        }
+
+        // Initialize and check every 10 minutes
+        fetchPiholeUpdates();
+        setInterval(fetchPiholeUpdates, 600000);
+
+        setInterval(updateDashboard, 2000);
+        setInterval(updateServicesList, 4000);
+        setInterval(updateProcessMonitor, 4000);
+        setInterval(updatePiholeData, 5000);
+        setInterval(loadWindscribeStatus, 20000); // status only — locations list rarely changes
+        
+        updateDashboard();
+        updateServicesList();
+        updateProcessMonitor();
+        updatePackagesSection();
+        updatePiholeData();
+        refreshPublicIp(); // one-time on page load only — no recurring polling after this
+        loadWindscribeLocations().then(loadWindscribeStatus); // status needs the dropdown populated first
+        lucide.createIcons();
+    </script>
+</body>
+</html>
