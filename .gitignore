@@ -11,3 +11,7 @@ venv/
 .vscode/
 .idea/
 .DS_Store
+
+# Logs / packaged archives (the log contains LAN IPs and client addresses)
+*.log
+*.zip
