@@ -3,8 +3,10 @@ import collections
 import json
 import os
 import secrets
+import signal
+import tempfile
 import time
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Literal
 from fastapi import FastAPI, HTTPException, BackgroundTasks, APIRouter, Depends
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import FileResponse, Response
@@ -1816,6 +1818,286 @@ async def run_package_operation(payload: PackageOperation):
     _background_tasks.add(task)                      # keep a reference so it isn't GC'd
     task.add_done_callback(_background_tasks.discard)
     return {"status": "started"}
+
+# --- Media integrity check (check_media_headers.sh) ---
+# On-demand, READ-ONLY scan of the media library for blank, truncated or corrupt
+# video files. The bash script does the checking; this section only runs it as a
+# background job (one at a time), follows its progress output, and serves the
+# results. Nothing here modifies, moves or deletes anything in the library.
+MEDIA_CHECK_SCRIPT = os.environ.get(
+    "MEDIA_CHECK_SCRIPT",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "check_media_headers.sh"),
+)
+MEDIA_LIBRARY = os.environ.get("MEDIA_LIBRARY", "/mnt/Media")
+MEDIA_REPORT = os.environ.get("MEDIA_REPORT", os.path.expanduser("~/bad_media_files.txt"))
+MEDIA_EXTENSIONS = (".mkv", ".webm", ".mka", ".mp4", ".m4v", ".mov", ".m4a")   # same set the script scans
+MEDIA_PROGRESS_RE = re.compile(r"^\[(\d+)\] checking: ")   # progress line the script prints in probe/full mode
+MEDIA_RESULTS_LIMIT = 300      # rows sent to the browser; the full list always stays in the report file
+
+media_check_state: Dict[str, Any] = {
+    "status": "idle",          # idle | counting | running
+    "mode": None,
+    "recheck": False,
+    "total": 0,
+    "processed": 0,
+    "current": "",
+    "last_result": None,
+    "results": [],
+}
+_media_lock = asyncio.Lock()   # one scan at a time
+_media_proc: Any = None
+_media_cancel_requested = False
+
+class MediaCheckRequest(BaseModel):
+    mode: Literal["header", "probe", "full"] = "header"
+    recheck: bool = False      # only re-check the files listed in the previous report
+
+def media_library_ready() -> bool:
+    """True if MEDIA_LIBRARY exists and lives on a mounted drive, not on the root
+    filesystem. With `nofail` in fstab, an unmounted drive leaves an empty
+    /mnt/Media on the SSD, and scanning that would report a misleading 'clean'."""
+    p = os.path.realpath(MEDIA_LIBRARY)
+    if not os.path.isdir(p):
+        return False
+    while not os.path.ismount(p):
+        p = os.path.dirname(p)
+    return p != "/"
+
+async def media_library_ready_async() -> bool:
+    # Run off the event loop and with a timeout: a stalled drive must not freeze the dashboard.
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(media_library_ready), timeout=3)
+    except asyncio.TimeoutError:
+        return False
+
+def count_media_files(root: str) -> int:
+    """Counts what the script will scan (same extensions, skips <root>/Incoming and any
+    .deletedByTMM folder, ignores symlinks like `find -type f`). Used for the progress bar."""
+    root = os.path.realpath(root)
+    skip_incoming = os.path.join(root, "Incoming")
+    n = 0
+    stack = [root]
+    while stack:
+        if _media_cancel_requested:
+            break
+        try:
+            with os.scandir(stack.pop()) as it:
+                for entry in it:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            if entry.name != ".deletedByTMM" and entry.path != skip_incoming:
+                                stack.append(entry.path)
+                        elif entry.is_file(follow_symlinks=False) and entry.name.lower().endswith(MEDIA_EXTENSIONS):
+                            n += 1
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return n
+
+def read_media_report() -> List[Dict[str, str]]:
+    rows: List[Dict[str, str]] = []
+    try:
+        with open(MEDIA_REPORT, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) >= 2:
+                    rows.append({
+                        "reason": parts[0],
+                        "path": parts[1],
+                        "detail": parts[2] if len(parts) > 2 else "",
+                    })
+    except OSError:
+        pass
+    return rows
+
+def existing_report_paths() -> List[str]:
+    """Files from the previous report that still exist. Files you've since deleted drop out."""
+    seen, paths = set(), []
+    for row in read_media_report():
+        p = row["path"]
+        if p not in seen and os.path.isfile(p):
+            seen.add(p)
+            paths.append(p)
+    return paths
+
+def write_empty_report():
+    with open(MEDIA_REPORT, "w", encoding="utf-8"):
+        pass
+
+def _signal_media_group(sig: int, proc: Any = None):
+    """The script runs in its own process group so ffmpeg/ffprobe/find stop with it."""
+    proc = proc or _media_proc
+    if proc is not None and proc.returncode is None:
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            pass
+
+async def _force_kill_media_after(proc: Any, delay: float):
+    await asyncio.sleep(delay)
+    _signal_media_group(signal.SIGKILL, proc)      # a specific proc, never a scan started later
+
+async def _run_media_check(mode: str, recheck: bool):
+    global _media_proc, _media_cancel_requested
+    _media_cancel_requested = False
+    state = media_check_state
+    state.update(status="counting", mode=mode, recheck=recheck, total=0, processed=0, current="")
+    outcome, detail, rc = "error", "", None
+    new_rows = None            # set only when a fresh report was produced
+    list_file = None
+    try:
+        args = ["bash", MEDIA_CHECK_SCRIPT, "-m", mode, "-o", MEDIA_REPORT]
+        if recheck:
+            paths = await asyncio.to_thread(existing_report_paths)
+            state["total"] = len(paths)
+            if paths:
+                fd, list_file = tempfile.mkstemp(prefix="media-recheck-", suffix=".txt")
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write("\n".join(paths) + "\n")
+                args += ["-l", list_file]
+        else:
+            state["total"] = await asyncio.to_thread(count_media_files, MEDIA_LIBRARY)
+        args.append(MEDIA_LIBRARY)
+
+        if _media_cancel_requested:
+            outcome = "cancelled"
+        elif state["total"] == 0 and recheck:
+            await asyncio.to_thread(write_empty_report)      # nothing left to re-check: all fixed or removed
+            outcome, new_rows = "ok", []
+        elif state["total"] == 0:
+            detail = "No video files found. Is the library mounted and readable by this user?"
+        else:
+            started = time.time()
+            state["status"] = "running"
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.DEVNULL,   # per-file results go to the report file instead
+                stderr=asyncio.subprocess.PIPE,      # progress lines (deep modes) and setup errors
+                start_new_session=True,              # own process group so Cancel also stops ffmpeg/ffprobe
+                limit=1 << 20,
+            )
+            _media_proc = proc
+            if _media_cancel_requested:              # Cancel arrived while the process was starting
+                _signal_media_group(signal.SIGTERM)
+            tail = collections.deque(maxlen=3)
+            async for raw in proc.stderr:
+                line = raw.decode(errors="replace").rstrip()
+                m = MEDIA_PROGRESS_RE.match(line)
+                if m:
+                    state["processed"] = int(m.group(1))
+                    state["current"] = line[m.end():]
+                elif line:
+                    tail.append(line)
+            rc = await proc.wait()
+
+            if _media_cancel_requested:
+                outcome = "cancelled"
+                # The script is gone, but ffmpeg/ffprobe may still be winding down from SIGTERM.
+                # Give them a moment, then sweep the whole process group so nothing keeps
+                # reading the drive after Cancel. (Still safe: the group id is only ~1s stale.)
+                await asyncio.sleep(1)
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            elif rc in (0, 1):
+                # Exit 1 = "problems found". Only trust it if the script really wrote a fresh report.
+                try:
+                    fresh = os.path.getmtime(MEDIA_REPORT) >= started - 2
+                except OSError:
+                    fresh = False
+                if fresh:
+                    outcome = "ok" if rc == 0 else "problems"
+                else:
+                    detail = " | ".join(tail) or f"script exited {rc} without writing a report"
+            else:
+                detail = " | ".join(tail) or f"script exited with code {rc}"
+    except Exception as e:
+        print(f"[Media Check Exception]: {e}")
+        detail = f"{type(e).__name__}: {e}"
+        _signal_media_group(signal.SIGKILL)
+    finally:
+        _media_proc = None
+        state.update(status="idle", current="")
+        if list_file:
+            try:
+                os.unlink(list_file)
+            except OSError:
+                pass
+
+    if outcome in ("ok", "problems"):
+        new_rows = await asyncio.to_thread(read_media_report)
+        state["results"] = new_rows
+    state["last_result"] = {
+        "mode": mode,
+        "recheck": recheck,
+        "outcome": outcome,
+        "detail": detail,
+        "returncode": rc,
+        "checked": state["total"],
+        "problems": len(new_rows) if new_rows is not None else None,
+        "finished_at": time.strftime("%H:%M:%S %d %b"),
+    }
+
+async def _media_check_task(mode: str, recheck: bool):
+    try:
+        await _run_media_check(mode, recheck)
+    finally:
+        _media_lock.release()
+
+@app.get("/api/media/status")
+async def get_media_status():
+    # After a dashboard restart, fall back to the report left by the previous run.
+    if media_check_state["last_result"] is None and os.path.exists(MEDIA_REPORT):
+        rows = await asyncio.to_thread(read_media_report)
+        media_check_state["results"] = rows
+        media_check_state["last_result"] = {
+            "mode": "unknown",
+            "recheck": False,
+            "outcome": "problems" if rows else "ok",
+            "detail": "",
+            "returncode": None,
+            "checked": None,
+            "problems": len(rows),
+            "finished_at": time.strftime("%H:%M:%S %d %b", time.localtime(os.path.getmtime(MEDIA_REPORT))),
+        }
+    return {
+        **{k: v for k, v in media_check_state.items() if k != "results"},
+        "results": media_check_state["results"][:MEDIA_RESULTS_LIMIT],
+        "results_total": len(media_check_state["results"]),
+        "library_mounted": await media_library_ready_async(),
+    }
+
+@app.post("/api/media/check")
+async def start_media_check(payload: MediaCheckRequest):
+    if not os.path.isfile(MEDIA_CHECK_SCRIPT):
+        raise HTTPException(status_code=500, detail=f"Script not found: {MEDIA_CHECK_SCRIPT}")
+    if not await media_library_ready_async():
+        raise HTTPException(status_code=409, detail=f"{MEDIA_LIBRARY} is not mounted")
+    if payload.recheck and not os.path.exists(MEDIA_REPORT):
+        raise HTTPException(status_code=409, detail="No previous report to re-check")
+    if _media_lock.locked():
+        raise HTTPException(status_code=409, detail="A media check is already running")
+    await _media_lock.acquire()
+    task = asyncio.create_task(_media_check_task(payload.mode, payload.recheck))
+    _background_tasks.add(task)                      # keep a reference so it isn't GC'd
+    task.add_done_callback(_background_tasks.discard)
+    return {"status": "started", "mode": payload.mode, "recheck": payload.recheck}
+
+@app.post("/api/media/cancel")
+async def cancel_media_check():
+    global _media_cancel_requested
+    if media_check_state["status"] == "idle":
+        raise HTTPException(status_code=409, detail="No media check is running")
+    _media_cancel_requested = True
+    proc = _media_proc
+    if proc is not None:
+        _signal_media_group(signal.SIGTERM, proc)
+        task = asyncio.create_task(_force_kill_media_after(proc, 10))   # SIGKILL if it ignores SIGTERM
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
+    return {"status": "cancelling"}
 
 @app.get("/api/telemetry/pihole/geomap")
 async def get_external_requests_map():

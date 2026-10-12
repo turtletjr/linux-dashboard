@@ -266,6 +266,41 @@
                         <div class="text-slate-500 italic text-center py-4 text-xs">Scanning processes...</div>
                     </div>
                 </div>
+
+                <!-- Media Integrity Widget -->
+                <div class="widget-card">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase flex items-center gap-2">
+                            <i data-lucide="film" class="w-4 h-4 text-rose-400"></i> Media Integrity
+                        </h2>
+                        <span id="media-last" class="text-[10px] font-mono text-slate-500">Never run</span>
+                    </div>
+
+                    <div class="flex flex-wrap gap-2 items-center">
+                        <select id="media-mode" class="flex-1 min-w-[10rem] bg-slate-900 border border-slate-700 rounded-md text-[11px] text-slate-300 px-2 py-1.5 font-mono cursor-pointer disabled:opacity-50">
+                            <option value="header">Header only (fast)</option>
+                            <option value="probe">Probe every packet (reads whole library)</option>
+                            <option value="full">Full decode (very slow on a Pi)</option>
+                        </select>
+                        <button id="media-start" onclick="startMediaCheck(false)" class="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-[11px] font-medium px-3 py-1.5 rounded-md transition-colors cursor-pointer whitespace-nowrap">Run check</button>
+                        <button id="media-recheck" onclick="startMediaCheck(true)" title="Check only the files in the current list again" class="bg-slate-700 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed text-white text-[11px] font-medium px-3 py-1.5 rounded-md transition-colors cursor-pointer whitespace-nowrap">Re-check listed</button>
+                        <button id="media-cancel" onclick="cancelMediaCheck()" class="hidden bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-medium px-3 py-1.5 rounded-md transition-colors cursor-pointer whitespace-nowrap">Cancel</button>
+                    </div>
+
+                    <div id="media-progress" class="hidden mt-3 bg-slate-900/50 p-3 rounded-lg border border-sky-500/30 flex flex-col gap-2">
+                        <div class="flex justify-between text-[11px] font-mono">
+                            <span id="media-progress-label" class="text-sky-400">Working...</span>
+                            <span id="media-progress-pct" class="text-slate-200 font-bold"></span>
+                        </div>
+                        <div class="w-full bg-slate-950 h-2 rounded-full overflow-hidden border border-slate-800">
+                            <div id="media-progress-bar" class="bg-sky-500 h-full transition-all duration-500" style="width: 0%"></div>
+                        </div>
+                        <div id="media-current" class="text-[10px] font-mono text-slate-400 truncate"></div>
+                    </div>
+
+                    <div id="media-summary" class="mt-3 text-[11px] font-mono text-slate-400"></div>
+                    <div id="media-results" class="mt-2 space-y-1.5 max-h-[22rem] overflow-y-auto pr-1"></div>
+                </div>
             </div>
 
             <!-- Right Column: 25% -->
@@ -1260,6 +1295,121 @@ async function updatePiholeData() {
             }
         }
 
+        // --- Media Integrity widget (check_media_headers.sh) ---
+        let mediaPollTimer = null;
+        function scheduleMediaPoll(ms) { clearTimeout(mediaPollTimer); mediaPollTimer = setTimeout(updateMediaWidget, ms); }
+
+        async function startMediaCheck(recheck) {
+            const mode = document.getElementById('media-mode').value;
+            const warnings = {
+                probe: 'Probe reads every file end to end. On a large library that keeps the media drive spinning for hours. Continue?',
+                full: 'Full decode checks every frame of every file. On the Pi that can take days. Continue?'
+            };
+            // Re-checking the listed files only touches a handful of files, so no warning there.
+            if (!recheck && warnings[mode] && !confirm(warnings[mode])) return;
+            try {
+                const res = await fetch('/api/media/check', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mode: mode, recheck: !!recheck })
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    alert(`Could not start the media check: ${err.detail || res.status}`);
+                }
+            } catch (e) { console.error("Media check start dropped:", e); }
+            scheduleMediaPoll(300);
+        }
+
+        async function cancelMediaCheck() {
+            if (!confirm('Stop the media check? The previous report is kept and no new report is written.')) return;
+            try {
+                const res = await fetch('/api/media/cancel', { method: 'POST' });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    alert(`Cancel failed: ${err.detail || res.status}`);
+                }
+            } catch (e) { console.error("Media check cancel dropped:", e); }
+            scheduleMediaPoll(300);
+        }
+
+        async function updateMediaWidget() {
+            let busy = false;
+            try {
+                const res = await fetch('/api/media/status');
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const d = await res.json();
+                const el = id => document.getElementById(id);
+                busy = d.status !== 'idle';
+                const lr = d.last_result;
+
+                el('media-mode').disabled = busy;
+                el('media-start').disabled = busy || !d.library_mounted;
+                el('media-start').title = d.library_mounted ? '' : 'Media library is not mounted';
+                el('media-recheck').disabled = busy || !d.library_mounted || !(d.results_total > 0);
+                el('media-cancel').classList.toggle('hidden', !busy);
+                el('media-last').innerText = lr ? `Last run ${lr.finished_at}` : 'Never run';
+
+                el('media-progress').classList.toggle('hidden', !busy);
+                // the summary/list below belong to the previous run while a new scan is going
+                el('media-summary').classList.toggle('opacity-40', busy);
+                el('media-results').classList.toggle('opacity-40', busy);
+                if (busy) {
+                    const deep = d.mode !== 'header';
+                    const pct = d.total > 0 ? Math.min(100, Math.round(d.processed / d.total * 100)) : 0;
+                    const what = d.recheck ? 'Re-checking' : 'Checking';
+                    if (d.status === 'counting') {
+                        el('media-progress-label').innerText = d.recheck ? 'Preparing list...' : 'Counting files...';
+                    } else if (deep) {
+                        el('media-progress-label').innerText = `${what} (${d.mode}): ${d.processed} of ${d.total}`;
+                    } else {
+                        el('media-progress-label').innerText = `${what} headers of ${d.total} files...`;
+                    }
+                    // Header mode prints no per-file progress, so its bar is a full-width "working" bar.
+                    el('media-progress-pct').innerText = (deep && d.status === 'running') ? `${pct}%` : '';
+                    el('media-progress-bar').style.width = `${deep ? pct : 100}%`;
+                    el('media-current').innerText = d.current || '';
+                } else if (lr) {
+                    const labels = { ok: 'Clean', problems: `${lr.problems} problem file(s)`, cancelled: 'Cancelled', error: 'Failed' };
+                    const colors = { ok: 'text-emerald-400', problems: 'text-rose-400', cancelled: 'text-amber-400', error: 'text-rose-400' };
+                    const parts = [
+                        `<span class="${colors[lr.outcome] || 'text-slate-300'} font-bold">${escapeHtml(labels[lr.outcome] || lr.outcome)}</span>`,
+                        lr.mode && lr.mode !== 'unknown' ? escapeHtml(lr.recheck ? `${lr.mode} re-check` : lr.mode) : null,
+                        lr.checked ? `${escapeHtml(lr.checked)} files checked` : null,
+                        `finished ${escapeHtml(lr.finished_at)}`
+                    ].filter(Boolean);
+                    let html = parts.join(' &middot; ');
+                    if (lr.detail) html += `<div class="mt-1 text-[10px] text-rose-300/80 break-words">${escapeHtml(lr.detail)}</div>`;
+                    el('media-summary').innerHTML = html;
+                }
+
+                if (!busy) {
+                    const rows = d.results || [];
+                    const note = d.results_total > rows.length
+                        ? `<div class="text-[10px] text-slate-500 font-mono text-center pt-1">Showing ${rows.length} of ${d.results_total} - full list in the report file</div>` : '';
+                    el('media-results').innerHTML = rows.map(r => {
+                        const slash = r.path.lastIndexOf('/');
+                        const name = slash >= 0 ? r.path.slice(slash + 1) : r.path;
+                        const dir = slash >= 0 ? r.path.slice(0, slash) : '';
+                        const badge = r.reason === 'TOOL_ERROR' ? 'text-amber-400' : 'text-rose-400';
+                        return `
+                        <div class="bg-slate-900/30 px-2.5 py-1.5 rounded border border-slate-700/40 text-[10px] font-mono" title="${escapeHtml(r.path)}">
+                            <div class="flex justify-between items-center gap-2">
+                                <span class="text-slate-200 truncate">${escapeHtml(name)}</span>
+                                <span class="${badge} font-bold shrink-0">${escapeHtml(r.reason)}</span>
+                            </div>
+                            <div class="text-slate-500 truncate">${escapeHtml(dir)}</div>
+                            ${r.detail ? `<div class="text-slate-400 truncate" title="${escapeHtml(r.detail)}">${escapeHtml(r.detail)}</div>` : ''}
+                        </div>`;
+                    }).join('') + note;
+                }
+            } catch (e) {
+                console.error("Media status update dropped:", e);
+            } finally {
+                scheduleMediaPoll(busy ? 1500 : 30000);
+            }
+        }
+
         // Initialize and check every 10 minutes
         fetchPiholeUpdates();
         setInterval(fetchPiholeUpdates, 600000);
@@ -1277,6 +1427,7 @@ async function updatePiholeData() {
         updatePiholeData();
         refreshPublicIp(); // one-time on page load only — no recurring polling after this
         loadWindscribeLocations().then(loadWindscribeStatus); // status needs the dropdown populated first
+        updateMediaWidget();
         lucide.createIcons();
     </script>
 </body>

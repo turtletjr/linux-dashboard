@@ -44,7 +44,8 @@ The dashboard is one page, split into three columns:
   non-system drives, and a Mount All button that mounts anything in
   `/etc/fstab` that isn't mounted yet), and a process
   monitor that flags processes hogging CPU or stuck in an uninterruptible
-  (`D`) state.
+  (`D`) state, plus a media integrity checker that scans the media library
+  for blank, truncated or corrupt video files on demand.
 - **Right** — active Jellyfin streams with playback controls, public IP,
   WireGuard + Tailscale tunnel status, qBittorrent transfer stats.
 
@@ -83,6 +84,8 @@ using credentials from `.env`.
   - Pi-hole v6+ (uses the newer session-based API)
   - qBittorrent with the WebUI enabled
   - `smartmontools` installed (`smartctl`) for drive health
+  - `ffprobe`/`ffmpeg` for the Media Integrity widget's *probe* and *full* modes
+    (Jellyfin's bundled copy in `/usr/lib/jellyfin-ffmpeg` is found automatically)
   - WireGuard (`wg-quick@<tunnel>.service`) and/or Tailscale running
   - The `windscribe-switch` script at `/usr/local/bin/windscribe-switch`,
     with its `/etc/wireguard/locations/*.env` files already set up — this
@@ -142,6 +145,9 @@ the real `.env`, it's already covered by `.gitignore`).
 | `QBITTORRENT_URL` | `http://192.168.1.10:8080` | BitTorrent Engine widget |
 | `QBITTORRENT_USERNAME` | `admin` | same |
 | `QBITTORRENT_PASSWORD` | *(empty)* | same — enable the WebUI in qBittorrent's settings first |
+| `MEDIA_LIBRARY` | `/mnt/Media` | Media Integrity widget — folder to scan |
+| `MEDIA_REPORT` | `~/bad_media_files.txt` | same — where the report is written (must be outside the library) |
+| `MEDIA_CHECK_SCRIPT` | `check_media_headers.sh` next to `main.py` | same |
 
 Missing `DASHBOARD_USERNAME`/`DASHBOARD_PASSWORD` is treated differently: the
 app fails closed and returns a `500` on every request until both are set,
@@ -209,6 +215,7 @@ sudo journalctl -u dashboard -n 200 | grep -i "Config Warning"   # should be emp
 | Active Streams (Jellyfin) | Jellyfin `/Sessions` API | Play/pause, stop, toggle English subtitles. Poster art is proxied through the dashboard (`/api/jellyfin/poster/<id>`, using `JELLYFIN_URL`), so your browser only needs to reach the dashboard, not Jellyfin directly. |
 | Tunnel Routing Topology | `wg show <tunnel> dump`, `tailscale status --json` | |
 | Windscribe Location Switcher | `windscribe-switch` — a bash script at `/usr/local/bin/windscribe-switch` (not part of this repo) | Switches between pre-configured Windscribe WireGuard locations, with handshake verification and automatic revert if the new location fails to connect. This app only shells out to it — see the script's own header comment for the expected `/etc/wireguard/locations/*.env` layout. |
+| Media Integrity | `check_media_headers.sh` (in this repo) via `POST /api/media/check`, `POST /api/media/cancel`, `GET /api/media/status` | Read-only scan for blank, truncated or corrupt video files. Three modes: *header* (first bytes only, fast), *probe* (`ffprobe` reads every packet — reads the whole drive) and *full* (`ffmpeg` decodes everything — very slow on a Pi). Runs as one background job at a time, at low CPU/disk priority, with a progress bar and a Cancel button. Results come from the script's report file and survive a dashboard restart; **Re-check listed** re-tests only the files from the last report. Refuses to run when the library isn't mounted, so an unmounted drive can't produce a false "clean". It never modifies, moves or deletes media. |
 | BitTorrent Engine | qBittorrent WebUI API (`/api/v2/...`) | Session-cookie auth, cached and re-authenticated on expiry |
 
 ## Security
