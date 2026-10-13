@@ -19,19 +19,55 @@
         display: flex;
         flex-direction: column;
         overflow: auto;
+        min-width: 0;
+      }
+
+      /* --- Minimizable widgets --- */
+      /* JS wraps everything under a card's heading in .widget-body so it can be hidden as one unit. */
+      .widget-body { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+      .widget-card.is-collapsed .widget-body { display: none; }
+      .widget-card.is-collapsed { min-height: 0 !important; padding-top: 0.75rem; padding-bottom: 0.75rem; }
+      .widget-card.is-collapsed > :first-child { margin-bottom: 0 !important; }
+      .widget-head { cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent; }
+      .widget-toggle {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 1.5rem; height: 1.5rem; flex-shrink: 0; border-radius: 0.375rem;
+        color: rgb(148, 163, 184); transition: color .15s, background-color .15s;
+      }
+      .widget-head:hover .widget-toggle { color: rgb(226, 232, 240); background-color: rgba(51, 65, 85, 0.6); }
+      .widget-toggle svg { width: 1rem; height: 1rem; transition: transform .2s ease; }
+      .widget-card.is-collapsed .widget-toggle svg { transform: rotate(-90deg); }
+
+      /* --- Mobile / narrow screens (below Tailwind's lg breakpoint) --- */
+      @media (max-width: 1023px) {
+        /* Columns dissolve into one list; --m-order (set by JS) puts the most-used widgets first. */
+        .widget-card { order: var(--m-order, 50); padding: 1rem; }
+        /* Bump the tiny desktop text sizes so they stay readable on a phone. */
+        [class*="text-[8px]"], [class*="text-[9px]"] { font-size: 11px !important; }
+        [class*="text-[10px]"] { font-size: 12px !important; }
+        [class*="text-[11px]"] { font-size: 13px !important; }
+        /* Finger-sized tap targets. */
+        .widget-card button, .widget-card select { min-height: 2.5rem; }
+        .widget-card .widget-toggle { min-height: 0; width: 2rem; height: 2rem; }
+        /* Process rows hold a name plus up to four buttons; let them wrap instead of overflowing. */
+        #process-monitor-box > div, #primary-services-box > div { flex-wrap: wrap; }
+        #jellyfin-activity-container { max-height: none !important; }
       }
     </style>
 </head>
-<body class="bg-slate-900 text-slate-100 font-sans min-h-screen p-6">
+<body class="bg-slate-900 text-slate-100 font-sans min-h-screen p-3 sm:p-6 overflow-x-hidden">
 
     <div class="max-w-[90rem] mx-auto"> 
         
-        <header class="mb-8 border-b border-slate-700 pb-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-            <h1 class="text-2xl font-bold tracking-tight text-emerald-400 flex items-center gap-3 shrink-0">
-                <i data-lucide="server" class="w-7 h-7"></i> GreenPlanet Dashboard
+        <header class="mb-4 sm:mb-8 border-b border-slate-700 pb-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 sm:gap-4">
+            <h1 class="text-xl sm:text-2xl font-bold tracking-tight text-emerald-400 flex items-center gap-3 shrink-0">
+                <i data-lucide="server" class="w-6 h-6 sm:w-7 sm:h-7"></i> GreenPlanet Dashboard
             </h1>
-            
+
             <div class="flex flex-wrap gap-2.5 items-center w-full sm:w-auto sm:justify-end text-xs font-mono">
+                <button id="collapse-all-btn" type="button" class="bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700 text-slate-300 hover:text-white cursor-pointer flex items-center gap-2 transition-colors" title="Collapse or expand every widget">
+                    <i data-lucide="chevrons-down-up" class="w-3.5 h-3.5"></i> <span id="collapse-all-label">Collapse all</span>
+                </button>
                 <span class="bg-slate-800 px-3 py-1.5 rounded-lg border border-slate-700 flex items-center gap-2 text-sky-400">
                     <i data-lucide="download" class="w-3.5 h-3.5"></i> <span id="speed-down">0 B/s</span>
                 </span>
@@ -41,10 +77,10 @@
             </div>
         </header>
         <!-- Main Body: 25% | 50% | 25% -->
-        <div class="grid grid-cols-1 lg:grid-cols-4 gap-6 mb-6">
+        <div class="grid grid-cols-1 lg:grid-cols-4 gap-4 lg:gap-6 mb-6">
             
             <!-- Left Column: 25% -->
-            <div class="lg:col-span-1 flex flex-col gap-6">
+            <div class="contents lg:flex lg:flex-col lg:col-span-1 lg:gap-6">
             <!-- Hardware Controls Widget -->
             <div class="widget-card justify-between min-h-[160px]">
                 <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-2">
@@ -183,7 +219,7 @@
             </div>
 
             <!-- Center Column: 50% -->
-            <div class="lg:col-span-2 flex flex-col gap-6">
+            <div class="contents lg:flex lg:flex-col lg:col-span-2 lg:gap-6">
                 <!-- System Compute Timeline Chart Widget -->
                 <div class="widget-card">
                     <div class="flex justify-between items-center mb-4">
@@ -304,7 +340,7 @@
             </div>
 
             <!-- Right Column: 25% -->
-            <div class="lg:col-span-1 flex flex-col gap-6">
+            <div class="contents lg:flex lg:flex-col lg:col-span-1 lg:gap-6">
             <!-- Active Streams (Jellyfin) Widget -->
             <div class="widget-card justify-between min-h-[160px]">
                 <div class="flex items-center justify-between mb-3">
@@ -1409,6 +1445,116 @@ async function updatePiholeData() {
                 scheduleMediaPoll(busy ? 1500 : 30000);
             }
         }
+
+        // --- Minimizable widgets + mobile ordering ---
+        // Runs once at load and enhances every .widget-card in place: the content under the
+        // heading is moved (not cloned) into a .widget-body wrapper, so every element id and
+        // reference the polling functions use keeps working while a widget is collapsed.
+        const COLLAPSE_KEY = 'dashboard.collapsedWidgets';
+        const isMobileLayout = () => window.matchMedia('(max-width: 1023px)').matches;
+
+        // Mobile stacking order (desktop keeps its three-column layout). Lower = higher on the page.
+        const MOBILE_ORDER = [
+            'active-streams', 'hardware-controls', 'core-services-daemon', 'system-hardware',
+            'network-protection', 'bittorrent-engine', 'tunnel-routing-topology', 'media-integrity',
+            'process-monitor', 'package-manager', 'public-ip', 'pi-hole-updates',
+            'system-compute-timeline', 'i-o-throughput-history-kb-s'
+        ];
+        // On a phone these start open the first time; everything else starts minimized.
+        const MOBILE_DEFAULT_OPEN = new Set(['active-streams', 'core-services-daemon']);
+
+        const CHEVRON_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
+
+        function loadCollapsedState() {
+            try { return JSON.parse(localStorage.getItem(COLLAPSE_KEY)) || {}; } catch (e) { return {}; }
+        }
+        function saveCollapsedState(state) {
+            try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify(state)); } catch (e) { /* private mode etc. */ }
+        }
+
+        function initWidgetCards() {
+            const state = loadCollapsedState();
+            const cards = Array.from(document.querySelectorAll('.widget-card'));
+            const used = new Set();
+
+            cards.forEach(card => {
+                const head = card.firstElementChild;
+                if (!head) return;
+                const title = head.querySelector('h2, h3') || head;
+                // Name the widget from its heading text only, ignoring status badges inside it (those have ids).
+                const titleClone = title.cloneNode(true);
+                titleClone.querySelectorAll('[id]').forEach(n => n.remove());
+                let id = (titleClone.textContent || 'widget').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'widget';
+                while (used.has(id)) id += '-2';
+                used.add(id);
+                card.dataset.widget = id;
+
+                const orderIdx = MOBILE_ORDER.indexOf(id);
+                if (orderIdx >= 0) card.style.setProperty('--m-order', orderIdx + 1);
+
+                // Everything after the header goes into the collapsible body.
+                const body = document.createElement('div');
+                body.className = 'widget-body';
+                while (head.nextSibling) body.appendChild(head.nextSibling);
+                card.appendChild(body);
+
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'widget-toggle';
+                btn.innerHTML = CHEVRON_SVG;
+                title.insertBefore(btn, title.firstChild);
+                title.classList.add('widget-head');
+
+                const apply = (collapsed) => {
+                    card.classList.toggle('is-collapsed', collapsed);
+                    btn.setAttribute('aria-expanded', String(!collapsed));
+                    btn.setAttribute('aria-label', (collapsed ? 'Expand ' : 'Minimize ') + id.replace(/-/g, ' '));
+                };
+                card._applyCollapsed = apply;
+
+                // Saved choice wins; otherwise phones start minimized (except the few above).
+                const saved = state[id];
+                apply(typeof saved === 'boolean' ? saved : (isMobileLayout() && !MOBILE_DEFAULT_OPEN.has(id)));
+
+                title.addEventListener('click', (e) => {
+                    if (e.target.closest('a, select, input')) return;
+                    setWidgetCollapsed(card, !card.classList.contains('is-collapsed'));
+                });
+            });
+            updateCollapseAllLabel();
+        }
+
+        function setWidgetCollapsed(card, collapsed, skipSave) {
+            card._applyCollapsed(collapsed);
+            if (!skipSave) {
+                const state = loadCollapsedState();
+                state[card.dataset.widget] = collapsed;
+                saveCollapsedState(state);
+            }
+            if (!collapsed) {
+                // Charts size themselves from their container; nudge them once it is visible again.
+                if (typeof metricsChart !== 'undefined') metricsChart.resize();
+                if (typeof ioChart !== 'undefined') ioChart.resize();
+            }
+            updateCollapseAllLabel();
+        }
+
+        function updateCollapseAllLabel() {
+            const cards = document.querySelectorAll('.widget-card[data-widget]');
+            const allCollapsed = cards.length > 0 && Array.from(cards).every(c => c.classList.contains('is-collapsed'));
+            const label = document.getElementById('collapse-all-label');
+            if (label) label.innerText = allCollapsed ? 'Expand all' : 'Collapse all';
+        }
+
+        document.getElementById('collapse-all-btn').addEventListener('click', () => {
+            const cards = Array.from(document.querySelectorAll('.widget-card[data-widget]'));
+            const collapse = !cards.every(c => c.classList.contains('is-collapsed'));
+            const state = loadCollapsedState();
+            cards.forEach(c => { setWidgetCollapsed(c, collapse, true); state[c.dataset.widget] = collapse; });
+            saveCollapsedState(state);
+        });
+
+        initWidgetCards();
 
         // Initialize and check every 10 minutes
         fetchPiholeUpdates();
