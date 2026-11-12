@@ -1403,6 +1403,7 @@ async def startup_event():
     asyncio.create_task(update_pihole_versions_loop())
     asyncio.create_task(update_service_telemetry_loop())
     asyncio.create_task(update_external_requests_map_loop())
+    asyncio.create_task(tv_connect_loop())
 
 # --- ENDPOINTS ---
 
@@ -2221,6 +2222,150 @@ async def control_jellyfin(payload: JellyfinCommand):
                 return {"status": "success"}
         except Exception: pass
     raise HTTPException(status_code=400, detail="Command failed")
+
+# --- TV remote (Google TV / Android TV) ---
+# Talks the Android TV Remote protocol v2 (port 6466, TLS) through the
+# `androidtvremote2` library. Pair once with `python tools/tv_remote_test.py pair`
+# as the same user this app runs as; the certificate lives in TV_CERT_DIR, outside
+# the repo. One long-lived connection is kept open (the library reconnects it by
+# itself), so a button press is just a small message, not a new TLS handshake.
+# Leave TV_IP blank to switch the feature off.
+try:
+    from androidtvremote2 import AndroidTVRemote, CannotConnect, ConnectionClosed, InvalidAuth
+except ImportError:                      # optional dependency
+    AndroidTVRemote = None
+
+TV_IP = os.environ.get("TV_IP", "").strip()
+TV_CERT_DIR = os.path.expanduser(os.environ.get("TV_CERT_DIR", "~/.config/dashboard-tv"))
+TV_CLIENT_NAME = "GreenPlanet Dashboard"
+# Only these key names can be sent. The API never forwards arbitrary strings to the TV.
+TV_KEYS = frozenset({
+    "HOME", "BACK", "MENU", "POWER",
+    "DPAD_UP", "DPAD_DOWN", "DPAD_LEFT", "DPAD_RIGHT", "DPAD_CENTER",
+    "VOLUME_UP", "VOLUME_DOWN", "MUTE",
+    "MEDIA_PLAY_PAUSE", "MEDIA_PLAY", "MEDIA_PAUSE", "MEDIA_STOP",
+    "MEDIA_REWIND", "MEDIA_FAST_FORWARD", "MEDIA_PREVIOUS", "MEDIA_NEXT",
+})
+# id -> (button label, package name or deep link). Edit to match what is on your TV.
+# The package of whatever is in the foreground is shown in the widget, which is the
+# easiest way to find the right value for an app.
+TV_APPS: Dict[str, Any] = {
+    "wholphin": ("Wholphin", "com.github.damontecres.wholphin"),
+    "youtube": ("YouTube", "https://www.youtube.com"),
+    "netflix": ("Netflix", "https://www.netflix.com/title"),
+}
+
+tv_remote: Any = None
+tv_state: Dict[str, Any] = {
+    "configured": bool(TV_IP) and AndroidTVRemote is not None,
+    "available": False,      # connected right now
+    "is_on": None,
+    "current_app": "",
+    "error": "",
+}
+_tv_available = asyncio.Event()
+
+class TvKeyRequest(BaseModel):
+    key: str
+
+class TvAppRequest(BaseModel):
+    app: str
+
+def _tv_set_available(value: bool):
+    tv_state["available"] = bool(value)
+    if value:
+        _tv_available.set()
+    else:
+        _tv_available.clear()
+
+async def tv_connect_loop():
+    """Connects to the TV in the background and keeps the connection alive. A TV that is
+    off or not yet paired just means retrying later; it never blocks the dashboard."""
+    global tv_remote
+    if not tv_state["configured"]:
+        if TV_IP and AndroidTVRemote is None:
+            print("[TV Remote] TV_IP is set but androidtvremote2 is not installed (pip install -r requirements.txt).")
+        return
+    try:
+        os.makedirs(TV_CERT_DIR, mode=0o700, exist_ok=True)
+        remote = AndroidTVRemote(
+            TV_CLIENT_NAME, os.path.join(TV_CERT_DIR, "cert.pem"), os.path.join(TV_CERT_DIR, "key.pem"), TV_IP
+        )
+        await remote.async_generate_cert_if_missing()
+        remote.add_is_available_updated_callback(_tv_set_available)
+        remote.add_is_on_updated_callback(lambda v: tv_state.update(is_on=v))
+        remote.add_current_app_updated_callback(lambda v: tv_state.update(current_app=v or ""))
+
+        delay = 5
+        while True:
+            try:
+                await remote.async_connect()
+                break
+            except InvalidAuth:
+                tv_state["error"] = "Not paired - run: python tools/tv_remote_test.py pair"
+                await asyncio.sleep(30)          # picks it up on its own once you have paired
+            except (CannotConnect, ConnectionClosed):
+                tv_state["error"] = "TV unreachable (off or asleep?)"
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 60)
+
+        tv_remote = remote
+        tv_state.update(error="", is_on=remote.is_on, current_app=remote.current_app or "")
+        _tv_set_available(True)
+        remote.keep_reconnecting(
+            invalid_auth_callback=lambda: tv_state.update(error="Pairing was rejected - pair again")
+        )
+    except Exception as e:
+        print(f"[TV Remote Loop Exception]: {e}")
+        tv_state["error"] = f"{type(e).__name__}: {e}"
+
+async def _tv_ready():
+    if not tv_state["configured"]:
+        raise HTTPException(status_code=503, detail="TV remote is not set up (set TV_IP in .env)")
+    if tv_remote is None:
+        raise HTTPException(status_code=503, detail=tv_state["error"] or "Connecting to the TV...")
+    if not _tv_available.is_set():
+        # The library drops idle connections and reconnects within a moment; give it a beat.
+        try:
+            await asyncio.wait_for(_tv_available.wait(), timeout=3)
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=503, detail="TV is not reachable right now")
+    return tv_remote
+
+@app.get("/api/tv/status")
+async def get_tv_status():
+    return {
+        "configured": tv_state["configured"],
+        "connected": tv_state["available"],
+        "is_on": tv_state["is_on"],
+        "current_app": tv_state["current_app"],
+        "error": tv_state["error"],
+        "apps": [{"id": app_id, "label": label} for app_id, (label, _) in TV_APPS.items()],
+    }
+
+@app.post("/api/tv/key")
+async def tv_send_key(payload: TvKeyRequest):
+    key = payload.key.upper()
+    if key not in TV_KEYS:
+        raise HTTPException(status_code=400, detail="Unsupported key")
+    remote = await _tv_ready()
+    try:
+        remote.send_key_command(key, "SHORT")
+    except ConnectionClosed:
+        raise HTTPException(status_code=503, detail="TV connection dropped - reconnecting")
+    return {"status": "sent", "key": key}
+
+@app.post("/api/tv/app")
+async def tv_launch_app(payload: TvAppRequest):
+    entry = TV_APPS.get(payload.app)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Unknown app")
+    remote = await _tv_ready()
+    try:
+        remote.send_launch_app_command(entry[1])
+    except ConnectionClosed:
+        raise HTTPException(status_code=503, detail="TV connection dropped - reconnecting")
+    return {"status": "launched", "app": payload.app}
 
 if __name__ == "__main__":
     import uvicorn

@@ -46,7 +46,8 @@ The dashboard is one page, split into three columns:
   monitor that flags processes hogging CPU or stuck in an uninterruptible
   (`D`) state, plus a media integrity checker that scans the media library
   for blank, truncated or corrupt video files on demand.
-- **Right** — active Jellyfin streams with playback controls, public IP,
+- **Right** — active Jellyfin streams with playback controls, a virtual
+  remote for a Google TV / Android TV, public IP,
   WireGuard + Tailscale tunnel status, qBittorrent transfer stats.
 
 Everything refreshes itself every 2–10 seconds depending on the widget — no
@@ -87,6 +88,8 @@ using credentials from `.env`.
   - `ffprobe`/`ffmpeg` for the Media Integrity widget's *probe* and *full* modes
     (Jellyfin's bundled copy in `/usr/lib/jellyfin-ffmpeg` is found automatically)
   - WireGuard (`wg-quick@<tunnel>.service`) and/or Tailscale running
+  - A Google TV / Android TV on the same LAN for the TV Remote widget (pair it once
+    with `python tools/tv_remote_test.py pair`, see [Components](#components))
   - The `windscribe-switch` script at `/usr/local/bin/windscribe-switch`,
     with its `/etc/wireguard/locations/*.env` files already set up — this
     script is not included in this repo, see [Components](#components)
@@ -148,6 +151,8 @@ the real `.env`, it's already covered by `.gitignore`).
 | `MEDIA_LIBRARY` | `/mnt/Media` | Media Integrity widget — folder to scan |
 | `MEDIA_REPORT` | `~/bad_media_files.txt` | same — where the report is written (must be outside the library) |
 | `MEDIA_CHECK_SCRIPT` | `check_media_headers.sh` next to `main.py` | same |
+| `TV_IP` | *(empty)* | TV Remote widget — LAN IP of a Google TV / Android TV. Blank switches the widget off |
+| `TV_CERT_DIR` | `~/.config/dashboard-tv` | same — where the pairing certificate is stored (outside the repo) |
 
 Missing `DASHBOARD_USERNAME`/`DASHBOARD_PASSWORD` is treated differently: the
 app fails closed and returns a `500` on every request until both are set,
@@ -217,6 +222,7 @@ sudo journalctl -u dashboard -n 200 | grep -i "Config Warning"   # should be emp
 | Windscribe Location Switcher | `windscribe-switch` — a bash script at `/usr/local/bin/windscribe-switch` (not part of this repo) | Switches between pre-configured Windscribe WireGuard locations, with handshake verification and automatic revert if the new location fails to connect. This app only shells out to it — see the script's own header comment for the expected `/etc/wireguard/locations/*.env` layout. |
 | Media Integrity | `check_media_headers.sh` (in this repo) via `POST /api/media/check`, `POST /api/media/cancel`, `GET /api/media/status` | Read-only scan for blank, truncated or corrupt video files. Three modes: *header* (first bytes only, fast), *probe* (`ffprobe` reads every packet — reads the whole drive) and *full* (`ffmpeg` decodes everything — very slow on a Pi). Runs as one background job at a time, at low CPU/disk priority, with a progress bar and a Cancel button. Results come from the script's report file and survive a dashboard restart; **Re-check listed** re-tests only the files from the last report. Refuses to run when the library isn't mounted, so an unmounted drive can't produce a false "clean". It never modifies, moves or deletes media. |
 | BitTorrent Engine | qBittorrent WebUI API (`/api/v2/...`) | Session-cookie auth, cached and re-authenticated on expiry |
+| TV Remote | Android TV Remote protocol v2 (port 6466) via `androidtvremote2` — `GET /api/tv/status`, `POST /api/tv/key`, `POST /api/tv/app` | D-pad, back/home/menu/power, volume, media keys and an app launcher. One long-lived connection that reconnects by itself. Pair once with `python tools/tv_remote_test.py pair`, as the same user the service runs as (the certificate lives in `~/.config/dashboard-tv`). Only key names in `TV_KEYS` and apps in `TV_APPS` (both in `main.py`) are accepted, so the API can't forward arbitrary commands to the TV. The widget shows the foreground app's package name, which is the easiest way to find the right ID for `TV_APPS`. |
 
 ## Security
 
@@ -326,6 +332,12 @@ The script's own handshake wait plus a possible auto-revert can take close
 to 30 seconds in the worst case. If it's consistently timing out, check
 `sudo windscribe-switch status` directly on the server — the tunnel may be
 stuck mid-transition and need a manual `sudo windscribe-switch down`.
+
+**TV Remote badge says Offline, or "Not paired"**
+Check `TV_IP` in `.env` and that the TV is on the same LAN (`nc -zv <tv-ip> 6466`). "Not paired" means the service's user has no certificate: run `python tools/tv_remote_test.py pair` as that user (the certificate is per-user, in `~/.config/dashboard-tv`) — the dashboard retries on its own every 30s, no restart needed. A TV that is fully off or asleep also shows Offline until it wakes.
+
+**An app button does nothing**
+The dashboard sends the app's package name (or deep link) from `TV_APPS` and the TV replies asynchronously, so a wrong ID only shows up as an error in `journalctl -u dashboard`. Open the app on the TV and read the package name from the widget's "Foreground:" line.
 
 ## License
 

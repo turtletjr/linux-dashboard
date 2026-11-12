@@ -38,6 +38,22 @@
       .widget-toggle svg { width: 1rem; height: 1rem; transition: transform .2s ease; }
       .widget-card.is-collapsed .widget-toggle svg { transform: rotate(-90deg); }
 
+      /* --- TV remote buttons --- */
+      .tv-btn {
+        display: flex; align-items: center; justify-content: center; gap: 0.25rem;
+        min-height: 2.75rem; border-radius: 0.75rem;
+        background-color: rgba(15, 23, 42, 0.6); border: 1px solid rgb(51, 65, 85);
+        color: rgb(226, 232, 240); font-size: 0.75rem; font-weight: 600; cursor: pointer;
+        touch-action: manipulation; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+        transition: background-color .1s, border-color .1s, transform .05s;
+      }
+      .tv-btn:hover { background-color: rgba(51, 65, 85, 0.6); border-color: rgb(100, 116, 139); }
+      .tv-btn:active { transform: scale(0.95); background-color: rgba(16, 185, 129, 0.2); border-color: rgb(16, 185, 129); }
+      .tv-btn svg { width: 1.1rem; height: 1.1rem; pointer-events: none; }
+      .tv-btn-ok { background-color: rgba(16, 185, 129, 0.12); border-color: rgba(16, 185, 129, 0.4); color: rgb(110, 231, 183); }
+      .tv-btn-power { color: rgb(251, 113, 133); }
+      .tv-btn-power:hover { background-color: rgba(225, 29, 72, 0.2); border-color: rgb(244, 63, 94); }
+
       /* --- Mobile / narrow screens (below Tailwind's lg breakpoint) --- */
       @media (max-width: 1023px) {
         /* Columns dissolve into one list; --m-order (set by JS) puts the most-used widgets first. */
@@ -351,7 +367,48 @@
                 <div id="jellyfin-activity-container" class="space-y-2 flex-1 overflow-y-auto max-h-[110px] pr-1"></div>
                 <div class="text-[10px] font-mono text-slate-500 text-right mt-2 border-t border-slate-700/40 pt-1">Server engine: <span id="jf-version">v--</span></div>
             </div>
-				<!-- Public IP Widget -->
+				<!-- TV Remote Widget -->
+                <div class="widget-card">
+                    <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-2">
+                        <i data-lucide="tv" class="w-4 h-4 text-purple-400"></i> TV Remote
+                        <span id="tv-status-badge" class="ml-auto text-[10px] px-2 py-0.5 font-sans font-semibold rounded normal-case bg-slate-700 text-slate-400">Offline</span>
+                    </h2>
+                    <div class="space-y-3">
+                        <div class="grid grid-cols-4 gap-2">
+                            <button type="button" class="tv-btn" data-tv-key="BACK" title="Back">Back</button>
+                            <button type="button" class="tv-btn" data-tv-key="HOME" title="Home">Home</button>
+                            <button type="button" class="tv-btn" data-tv-key="MENU" title="Menu">Menu</button>
+                            <button type="button" class="tv-btn tv-btn-power" data-tv-key="POWER" title="Power (on / standby)"><i data-lucide="power"></i></button>
+                        </div>
+                        <div class="grid grid-cols-3 gap-2 max-w-[14rem] mx-auto">
+                            <span></span>
+                            <button type="button" class="tv-btn" data-tv-key="DPAD_UP" title="Up"><i data-lucide="chevron-up"></i></button>
+                            <span></span>
+                            <button type="button" class="tv-btn" data-tv-key="DPAD_LEFT" title="Left"><i data-lucide="chevron-left"></i></button>
+                            <button type="button" class="tv-btn tv-btn-ok" data-tv-key="DPAD_CENTER" title="Select">OK</button>
+                            <button type="button" class="tv-btn" data-tv-key="DPAD_RIGHT" title="Right"><i data-lucide="chevron-right"></i></button>
+                            <span></span>
+                            <button type="button" class="tv-btn" data-tv-key="DPAD_DOWN" title="Down"><i data-lucide="chevron-down"></i></button>
+                            <span></span>
+                        </div>
+                        <div class="grid grid-cols-3 gap-2">
+                            <button type="button" class="tv-btn" data-tv-key="VOLUME_DOWN" title="Volume down">Vol &minus;</button>
+                            <button type="button" class="tv-btn" data-tv-key="MUTE" title="Mute">Mute</button>
+                            <button type="button" class="tv-btn" data-tv-key="VOLUME_UP" title="Volume up">Vol +</button>
+                        </div>
+                        <div class="grid grid-cols-5 gap-2">
+                            <button type="button" class="tv-btn" data-tv-key="MEDIA_PREVIOUS" title="Previous"><i data-lucide="skip-back"></i></button>
+                            <button type="button" class="tv-btn" data-tv-key="MEDIA_REWIND" title="Rewind"><i data-lucide="rewind"></i></button>
+                            <button type="button" class="tv-btn" data-tv-key="MEDIA_PLAY_PAUSE" title="Play / pause"><i data-lucide="play"></i><i data-lucide="pause"></i></button>
+                            <button type="button" class="tv-btn" data-tv-key="MEDIA_FAST_FORWARD" title="Fast forward"><i data-lucide="fast-forward"></i></button>
+                            <button type="button" class="tv-btn" data-tv-key="MEDIA_NEXT" title="Next"><i data-lucide="skip-forward"></i></button>
+                        </div>
+                        <div id="tv-apps" class="flex flex-wrap gap-2"></div>
+                        <div id="tv-msg" class="hidden text-[10px] font-mono"></div>
+                        <div id="tv-now" class="text-[10px] font-mono text-slate-500 truncate border-t border-slate-700/40 pt-1.5"></div>
+                    </div>
+                </div>
+                <!-- Public IP Widget -->
                 <div class="widget-card">
                     <div class="flex justify-between items-center mb-3">
                         <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase flex items-center gap-2">
@@ -1446,6 +1503,137 @@ async function updatePiholeData() {
             }
         }
 
+        // --- TV remote (Google TV / Android TV) ---
+        // Buttons fire on pointerdown (not click) so taps feel instant on a phone; directional and
+        // volume keys auto-repeat while held. The backend only accepts keys from its own allowlist.
+        const TV_REPEAT_KEYS = new Set(['DPAD_UP', 'DPAD_DOWN', 'DPAD_LEFT', 'DPAD_RIGHT', 'VOLUME_UP', 'VOLUME_DOWN']);
+        let tvRepeatDelay = null, tvRepeatTimer = null, tvSending = false, tvMsgTimer = null, tvAppsKey = '';
+
+        function showTvMessage(text, isError) {
+            const el = document.getElementById('tv-msg');
+            if (!el) return;
+            el.textContent = text;
+            el.className = `text-[10px] font-mono ${isError ? 'text-rose-400' : 'text-slate-400'}`;
+            clearTimeout(tvMsgTimer);
+            tvMsgTimer = setTimeout(() => el.classList.add('hidden'), 3500);
+        }
+
+        function stopTvRepeat() {
+            clearTimeout(tvRepeatDelay);
+            clearInterval(tvRepeatTimer);
+            tvRepeatDelay = tvRepeatTimer = null;
+        }
+
+        async function sendTvKey(key, isRepeat) {
+            if (isRepeat && tvSending) return;   // don't pile requests up while a button is held
+            tvSending = true;
+            try {
+                const res = await fetch('/api/tv/key', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ key })
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    showTvMessage(err.detail || `TV error ${res.status}`, true);
+                    stopTvRepeat();
+                }
+            } catch (e) {
+                showTvMessage('Request failed - check your connection', true);
+                stopTvRepeat();
+            } finally {
+                tvSending = false;
+            }
+        }
+
+        async function launchTvApp(app, label) {
+            try {
+                const res = await fetch('/api/tv/app', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ app })
+                });
+                if (res.ok) {
+                    showTvMessage(`Launching ${label}...`, false);
+                } else {
+                    const err = await res.json().catch(() => ({}));
+                    showTvMessage(err.detail || `TV error ${res.status}`, true);
+                }
+            } catch (e) {
+                showTvMessage('Request failed - check your connection', true);
+            }
+        }
+
+        document.addEventListener('pointerdown', (e) => {
+            const btn = e.target.closest('[data-tv-key]');
+            if (!btn || btn.dataset.tvKey === 'POWER' || e.button > 0) return;   // power is confirmed on click
+            const key = btn.dataset.tvKey;
+            if (navigator.vibrate) navigator.vibrate(8);
+            stopTvRepeat();
+            sendTvKey(key, false);
+            if (TV_REPEAT_KEYS.has(key)) {
+                tvRepeatDelay = setTimeout(() => {
+                    tvRepeatTimer = setInterval(() => sendTvKey(key, true), 140);
+                }, 450);
+            }
+        });
+        ['pointerup', 'pointercancel'].forEach(t => document.addEventListener(t, stopTvRepeat));
+        window.addEventListener('blur', stopTvRepeat);
+
+        document.addEventListener('click', (e) => {
+            const keyBtn = e.target.closest('[data-tv-key]');
+            if (keyBtn) {
+                const key = keyBtn.dataset.tvKey;
+                if (key === 'POWER') {
+                    if (confirm('Toggle TV power (on / standby)?')) sendTvKey(key, false);
+                } else if (e.detail === 0) {
+                    sendTvKey(key, false);   // keyboard activation (Enter/Space); mouse and touch are handled on pointerdown
+                }
+                return;
+            }
+            const appBtn = e.target.closest('[data-tv-app]');
+            if (appBtn) launchTvApp(appBtn.dataset.tvApp, appBtn.textContent.trim());
+        });
+
+        async function updateTvStatus() {
+            const badge = document.getElementById('tv-status-badge');
+            if (!badge) return;
+            const base = 'ml-auto text-[10px] px-2 py-0.5 font-sans font-semibold rounded normal-case ';
+            const styles = {
+                online: 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20',
+                standby: 'bg-amber-500/10 text-amber-400 border border-amber-500/20',
+                offline: 'bg-rose-500/10 text-rose-400 border border-rose-500/20',
+                off: 'bg-slate-500/10 text-slate-400 border border-slate-500/20'
+            };
+            const nowEl = document.getElementById('tv-now');
+            try {
+                const res = await fetch('/api/tv/status');
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const d = await res.json();
+                let label, style;
+                if (!d.configured) { label = 'Not set up'; style = styles.off; }
+                else if (!d.connected) { label = 'Offline'; style = styles.offline; }
+                else if (d.is_on === false) { label = 'Standby'; style = styles.standby; }
+                else { label = 'Online'; style = styles.online; }
+                badge.className = base + style;
+                badge.innerText = label;
+                nowEl.textContent = !d.configured ? 'Set TV_IP in .env to enable the remote'
+                    : (d.error || (d.current_app ? `Foreground: ${d.current_app}` : ''));
+
+                const appsKey = JSON.stringify(d.apps || []);
+                if (appsKey !== tvAppsKey) {   // only rebuild the launcher when the list changes
+                    tvAppsKey = appsKey;
+                    document.getElementById('tv-apps').innerHTML = (d.apps || []).map(a =>
+                        `<button type="button" class="tv-btn px-3" data-tv-app="${escapeHtml(a.id)}">${escapeHtml(a.label)}</button>`
+                    ).join('');
+                }
+            } catch (e) {
+                badge.className = base + styles.offline;
+                badge.innerText = 'Offline';
+                console.error("TV status update dropped:", e);
+            }
+        }
+
         // --- Minimizable widgets + mobile ordering ---
         // Runs once at load and enhances every .widget-card in place: the content under the
         // heading is moved (not cloned) into a .widget-body wrapper, so every element id and
@@ -1455,13 +1643,13 @@ async function updatePiholeData() {
 
         // Mobile stacking order (desktop keeps its three-column layout). Lower = higher on the page.
         const MOBILE_ORDER = [
-            'active-streams', 'hardware-controls', 'core-services-daemon', 'system-hardware',
+            'active-streams', 'tv-remote', 'hardware-controls', 'core-services-daemon', 'system-hardware',
             'network-protection', 'bittorrent-engine', 'tunnel-routing-topology', 'media-integrity',
             'process-monitor', 'package-manager', 'public-ip', 'pi-hole-updates',
             'system-compute-timeline', 'i-o-throughput-history-kb-s'
         ];
         // On a phone these start open the first time; everything else starts minimized.
-        const MOBILE_DEFAULT_OPEN = new Set(['active-streams', 'core-services-daemon']);
+        const MOBILE_DEFAULT_OPEN = new Set(['active-streams', 'tv-remote', 'core-services-daemon']);
 
         const CHEVRON_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
 
@@ -1574,6 +1762,8 @@ async function updatePiholeData() {
         refreshPublicIp(); // one-time on page load only — no recurring polling after this
         loadWindscribeLocations().then(loadWindscribeStatus); // status needs the dropdown populated first
         updateMediaWidget();
+        updateTvStatus();
+        setInterval(updateTvStatus, 5000);
         lucide.createIcons();
     </script>
 </body>
