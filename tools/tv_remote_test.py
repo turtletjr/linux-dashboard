@@ -8,6 +8,8 @@ Run this on the server (it needs to reach the TV), not from your laptop:
     python tools/tv_remote_test.py status
     python tools/tv_remote_test.py key HOME
     python tools/tv_remote_test.py key DPAD_UP
+    python tools/tv_remote_test.py key VOLUME_UP VOLUME_UP VOLUME_DOWN VOLUME_DOWN
+    python tools/tv_remote_test.py --debug status     # log every protocol message
     python tools/tv_remote_test.py launch jellyfin
 
 TV address comes from --host or the TV_IP environment variable.
@@ -16,6 +18,7 @@ so it can never be committed. Override with TV_CERT_DIR.
 """
 import argparse
 import asyncio
+import logging
 import os
 import sys
 
@@ -72,16 +75,19 @@ async def connected(host: str) -> AndroidTVRemote:
 async def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--host", default=os.environ.get("TV_IP"), help="TV IP address (or set TV_IP)")
+    ap.add_argument("--debug", action="store_true", help="log protocol traffic to the terminal")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("pair")
     sub.add_parser("status")
     k = sub.add_parser("key")
-    k.add_argument("name", help="e.g. HOME, BACK, DPAD_UP, DPAD_CENTER, VOLUME_UP, MEDIA_PLAY_PAUSE")
+    k.add_argument("names", nargs="+", help="one or more of HOME, BACK, DPAD_UP, DPAD_CENTER, VOLUME_UP, MUTE, MEDIA_PLAY_PAUSE ...")
     l = sub.add_parser("launch")
     l.add_argument("app", help=f"one of {', '.join(APPS)} or a full deep link")
     args = ap.parse_args()
     if not args.host:
         sys.exit("No TV address: pass --host or set TV_IP")
+    if args.debug:
+        logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(name)s: %(message)s")
 
     if args.cmd == "pair":
         await pair(args.host)
@@ -90,17 +96,22 @@ async def main() -> None:
     remote = await connected(args.host)
     try:
         if args.cmd == "status":
+            # app / volume / power updates arrive as separate messages shortly after
+            # connecting, so give them a moment instead of reading them instantly.
+            await asyncio.sleep(3)
             print("device:  ", remote.device_info)
             print("is_on:   ", remote.is_on)
             print("app:     ", remote.current_app)
             print("volume:  ", remote.volume_info)
         elif args.cmd == "key":
-            remote.send_key_command(args.name.upper(), "SHORT")
-            print(f"sent {args.name.upper()}")
+            for name in args.names:
+                remote.send_key_command(name.upper(), "SHORT")
+                print(f"sent {name.upper()}")
+                await asyncio.sleep(0.6)
         elif args.cmd == "launch":
             remote.send_launch_app_command(APPS.get(args.app.lower(), args.app))
             print(f"launch requested: {args.app}")
-        await asyncio.sleep(0.5)   # let the command flush before disconnecting
+        await asyncio.sleep(2)   # let commands flush and any error reply from the TV arrive
     finally:
         remote.disconnect()
 
