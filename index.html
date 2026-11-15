@@ -409,10 +409,10 @@
                         <div id="tv-now" class="text-[10px] font-mono text-slate-500 truncate border-t border-slate-700/40 pt-1.5"></div>
                     </div>
                 </div>
-                <!-- Cast to TV Widget -->
+                <!-- Open on TV Widget -->
                 <div class="widget-card">
                     <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-2">
-                        <i data-lucide="cast" class="w-4 h-4 text-purple-400"></i> Cast to TV
+                        <i data-lucide="monitor-play" class="w-4 h-4 text-purple-400"></i> Open on TV
                     </h2>
                     <div class="space-y-2">
                         <input id="cast-search" type="search" placeholder="Search movies and shows..." autocomplete="off"
@@ -1655,9 +1655,10 @@ async function updatePiholeData() {
             }
         }
 
-        // --- Cast to TV: browse Jellyfin here, start playback on the TV's Jellyfin client ---
-        // Play is an explicit button on each row (not a tap on the whole row) so scrolling a
-        // list on a phone can't interrupt whatever is already playing.
+        // --- Open on TV: browse Jellyfin here, open the title's page in Wholphin on the TV ---
+        // Wholphin can't be told to start playback remotely, so this stops at the details page and
+        // Play is pressed on the TV (or with the remote widget). Each row has an explicit Open
+        // button rather than a tappable row, so scrolling a list on a phone can't change the TV.
         let castSeries = null, castBusy = false, castSeq = 0, castMsgTimer = null, castSearchTimer = null;
 
         function showCastMessage(text, isError, sticky) {
@@ -1679,7 +1680,7 @@ async function updatePiholeData() {
                     <div class="text-sm text-slate-200 truncate">${escapeHtml(it.name)}</div>
                     <div class="text-[10px] font-mono text-slate-500 truncate">${escapeHtml(meta)}</div>
                 </div>
-                <button type="button" class="tv-btn px-3 shrink-0" ${attr}="${escapeHtml(it.id)}" data-cast-name="${escapeHtml(it.name)}">${isSeries ? 'Episodes' : 'Play'}</button>
+                <button type="button" class="tv-btn px-3 shrink-0" ${attr}="${escapeHtml(it.id)}" data-cast-name="${escapeHtml(it.name)}">${isSeries ? 'Episodes' : 'Open'}</button>
             </div>`;
         }
 
@@ -1714,15 +1715,15 @@ async function updatePiholeData() {
             if (castBusy) return;
             castBusy = true;
             btn.disabled = true;
-            showCastMessage(`Starting "${name}"... (can take up to 30s if the app has to open first)`, false, true);
+            showCastMessage(`Opening "${name}" on the TV...`, false, true);
             try {
-                const res = await fetch('/api/tv/cast', {
+                const res = await fetch('/api/tv/open', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ item_id: id })
                 });
                 const d = await res.json().catch(() => ({}));
-                if (res.ok) showCastMessage(`Playing on TV: ${d.name || name}`, false);
+                if (res.ok) showCastMessage(`Opened on TV: ${d.name || name} - press Play there`, false);
                 else showCastMessage(d.detail || `Error ${res.status}`, true);
             } catch (e) {
                 showCastMessage('Request failed - check your connection', true);
@@ -1763,7 +1764,7 @@ async function updatePiholeData() {
 
         // Mobile stacking order (desktop keeps its three-column layout). Lower = higher on the page.
         const MOBILE_ORDER = [
-            'active-streams', 'tv-remote', 'cast-to-tv', 'hardware-controls', 'core-services-daemon', 'system-hardware',
+            'active-streams', 'tv-remote', 'open-on-tv', 'hardware-controls', 'core-services-daemon', 'system-hardware',
             'network-protection', 'bittorrent-engine', 'tunnel-routing-topology', 'media-integrity',
             'process-monitor', 'package-manager', 'public-ip', 'pi-hole-updates',
             'system-compute-timeline', 'i-o-throughput-history-kb-s'

@@ -2359,23 +2359,44 @@ async def _run_adb(*args: str, timeout: float = 10.0) -> str:
         raise RuntimeError("adb timed out")
     return out.decode(errors="replace")
 
+async def _adb_connect() -> str:
+    """Connects to the TV (a no-op if already connected) and returns its adb serial."""
+    serial = f"{TV_IP}:{TV_ADB_PORT}"
+    out = await _run_adb("connect", serial)
+    low = out.lower()
+    if "unauthorized" in low or "failed to authenticate" in low:
+        raise RuntimeError("ADB not authorized - accept the debugging prompt on the TV (tick 'Always allow')")
+    if "connected to" not in low:
+        raise RuntimeError(f"ADB could not connect: {out.strip()[:120] or 'no response'}")
+    return serial
+
 async def _adb_launch(package: str) -> None:
     """Opens an installed app by package name. Raises RuntimeError with a readable reason."""
     if not _PACKAGE_RE.match(package):
         raise RuntimeError("invalid package name")
-    serial = f"{TV_IP}:{TV_ADB_PORT}"
     async with _adb_lock:
-        out = await _run_adb("connect", serial)
-        low = out.lower()
-        if "unauthorized" in low or "failed to authenticate" in low:
-            raise RuntimeError("ADB not authorized - accept the debugging prompt on the TV (tick 'Always allow')")
-        if "connected to" not in low:
-            raise RuntimeError(f"ADB could not connect: {out.strip()[:120] or 'no response'}")
+        serial = await _adb_connect()
         out = await _run_adb("-s", serial, "shell", "monkey", "-p", package,
                              "-c", "android.intent.category.LAUNCHER", "1")
     if "No activities found" in out or "monkey aborted" in out:
         raise RuntimeError("That app is not installed on the TV")
     if "Events injected: 1" not in out:
+        raise RuntimeError(f"Unexpected ADB response: {out.strip()[-120:]}")
+
+# The only link shape ever sent to the TV; every id in it is hex (validated before it gets here).
+_WHOLPHIN_LINK_RE = re.compile(r"wholphin://play\?serverId=[0-9a-fA-F-]+&userId=[0-9a-fA-F-]+&itemId=[0-9a-fA-F-]+")
+
+async def _adb_open_link(uri: str) -> None:
+    """Hands a wholphin:// link to the TV (this opens the item's details page)."""
+    if not _WHOLPHIN_LINK_RE.fullmatch(uri):
+        raise RuntimeError("invalid link")
+    async with _adb_lock:
+        serial = await _adb_connect()
+        # adb joins the arguments and the TV's own shell parses them, so '&' needs the single quotes.
+        out = await _run_adb("-s", serial, "shell", f"am start -a android.intent.action.VIEW -d '{uri}'")
+    if "Error" in out or "unable to resolve" in out.lower():
+        raise RuntimeError("The TV app didn't accept the link - is Wholphin installed, and recent enough to support links?")
+    if "Starting: Intent" not in out:    # "intent delivered to currently running instance" warnings are fine
         raise RuntimeError(f"Unexpected ADB response: {out.strip()[-120:]}")
 
 @app.get("/api/tv/status")
@@ -2426,16 +2447,18 @@ async def tv_launch_app(payload: TvAppRequest):
         raise HTTPException(status_code=503, detail="TV connection dropped - reconnecting")
     return {"status": "requested", "app": payload.app, "method": "link", "adb_error": adb_error}
 
-# --- Cast to TV: browse Jellyfin, start playback on the TV's Jellyfin client ---
-# The dashboard finds the TV's Jellyfin session (Wholphin by default) and sends it a PlayNow
-# command through Jellyfin's own API. If the app is not running, it is opened over ADB first.
-# TV_JELLYFIN_CLIENT is matched against each session's client / device name, case-insensitively.
+# --- Open on TV: browse Jellyfin here, open the title's page in Wholphin on the TV ---
+# Wholphin ignores play commands sent through Jellyfin (its session advertises none), but it does
+# accept a wholphin:// link, which the dashboard sends over ADB. The link opens the item's details
+# page; pressing Play is left to the remote. TV_JELLYFIN_CLIENT is matched against each Jellyfin
+# session's client / device name (case-insensitive) to find the TV's Jellyfin user; set
+# TV_JELLYFIN_USER_ID to skip that lookup.
 TV_JELLYFIN_CLIENT = os.environ.get("TV_JELLYFIN_CLIENT", "Wholphin").strip().lower()
-TV_JELLYFIN_APP = os.environ.get("TV_JELLYFIN_APP", "wholphin").strip()   # id in TV_APPS to open first
+TV_JELLYFIN_USER_ID = os.environ.get("TV_JELLYFIN_USER_ID", "").strip()
 _JF_GUID_RE = re.compile(r"[0-9a-fA-F]{32}|[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 _CAST_TYPES = ("Movie", "Episode")
 
-class TvCastRequest(BaseModel):
+class TvOpenRequest(BaseModel):
     item_id: str
 
 def _jf_headers() -> Dict[str, str]:
@@ -2481,70 +2504,36 @@ async def tv_library(q: str = "", series: str = ""):
 
 def _pick_tv_session(sessions: List[Dict[str, Any]]) -> Any:
     matches = [
-        s for s in sessions
-        if TV_JELLYFIN_CLIENT in f'{s.get("Client", "")} {s.get("DeviceName", "")}'.lower()
+        x for x in sessions
+        if TV_JELLYFIN_CLIENT in f'{x.get("Client", "")} {x.get("DeviceName", "")}'.lower()
     ]
-    return max(matches, key=lambda s: s.get("LastActivityDate", "")) if matches else None
+    return max(matches, key=lambda x: x.get("LastActivityDate", "")) if matches else None
 
-async def _controllable_sessions() -> List[Dict[str, Any]]:
-    data = await _jf_get("/Sessions", timeout=3.0)
-    return [s for s in data if s.get("SupportsRemoteControl")]
+_jf_server_id_cache = ""
 
-def _same_item(a: Any, b: Any) -> bool:
-    return str(a or "").replace("-", "").lower() == str(b or "").replace("-", "").lower()
+async def _jf_server_id() -> str:
+    global _jf_server_id_cache
+    if not _jf_server_id_cache:
+        _jf_server_id_cache = str((await _jf_get("/System/Info/Public", timeout=4.0)).get("Id") or "")
+    return _jf_server_id_cache
 
-async def _send_play_now(session_id: str, item_id: str) -> None:
-    try:
-        async with httpx.AsyncClient(timeout=6.0) as client:
-            res = await client.post(
-                f"{JELLYFIN_URL}/Sessions/{session_id}/Playing",
-                params={"playCommand": "PlayNow", "itemIds": item_id},
-                headers=_jf_headers(), content="",
-            )
-    except httpx.HTTPError:
-        raise HTTPException(status_code=502, detail="Jellyfin unreachable")
-    if res.status_code not in (200, 204):
-        raise HTTPException(status_code=502, detail=f"Jellyfin refused the play command (HTTP {res.status_code})")
+async def _tv_jellyfin_user_id() -> str:
+    """The Jellyfin user the TV app is signed in as: from TV_JELLYFIN_USER_ID, else from its
+    Jellyfin session, else the only user on the server."""
+    if TV_JELLYFIN_USER_ID:
+        return TV_JELLYFIN_USER_ID
+    session = _pick_tv_session(await _jf_get("/Sessions", timeout=3.0))
+    if session and session.get("UserId"):
+        return str(session["UserId"])
+    users = await _jf_get("/Users", timeout=4.0)
+    if len(users) == 1:
+        return str(users[0].get("Id") or "")
+    raise HTTPException(status_code=502, detail=(
+        "Can't tell which Jellyfin user the TV app uses - open it once, or set TV_JELLYFIN_USER_ID in .env"
+    ))
 
-async def _is_playing(session_id: str, item_id: str, seconds: int) -> bool:
-    """Jellyfin answers 204 as soon as it has handed the command to the session - that says
-    nothing about whether the TV app did anything with it. So look at the session itself."""
-    for _ in range(seconds):
-        await asyncio.sleep(1)
-        for sess in await _jf_get("/Sessions", timeout=3.0):
-            if sess.get("Id") == session_id and _same_item((sess.get("NowPlayingItem") or {}).get("Id"), item_id):
-                return True
-    return False
-
-async def _play_and_confirm(session: Dict[str, Any], item_id: str) -> bool:
-    """Sends PlayNow and checks it took effect; one retry covers an app that was still starting."""
-    for wait in (10, 8):
-        await _send_play_now(session["Id"], item_id)
-        if await _is_playing(session["Id"], item_id, wait):
-            return True
-        await asyncio.sleep(2)
-    return False
-
-async def _open_tv_app_and_wait() -> Any:
-    """Opens the TV's Jellyfin app over ADB and waits for its session. Returns the session,
-    or None if ADB isn't available or the session never showed up. ADB errors raise."""
-    entry = TV_APPS.get(TV_JELLYFIN_APP)
-    if not (ADB_BIN and entry and TV_IP):
-        return None
-    try:
-        await _adb_launch(entry["package"])
-    except RuntimeError as e:
-        raise HTTPException(status_code=502, detail=f"Could not open {entry['label']} on the TV: {e}")
-    for _ in range(25):                          # the app registers its session a few seconds after opening
-        await asyncio.sleep(1)
-        session = _pick_tv_session(await _controllable_sessions())
-        if session:
-            await asyncio.sleep(4)               # let it finish starting up before it gets a command
-            return session
-    return None
-
-@app.post("/api/tv/cast")
-async def tv_cast(payload: TvCastRequest):
+@app.post("/api/tv/open")
+async def tv_open(payload: TvOpenRequest):
     if not _JF_GUID_RE.fullmatch(payload.item_id):
         raise HTTPException(status_code=400, detail="Invalid item id")
     items = (await _jf_get("/Items", {"ids": payload.item_id})).get("Items") or []
@@ -2552,39 +2541,21 @@ async def tv_cast(payload: TvCastRequest):
         raise HTTPException(status_code=404, detail="Item not found in Jellyfin")
     item = items[0]
     if item.get("Type") not in _CAST_TYPES:
-        raise HTTPException(status_code=400, detail="Only movies and episodes can be played directly")
-
-    sessions = await _controllable_sessions()
-    session = _pick_tv_session(sessions)
-    opened_app = False
-    if not session:
-        session = await _open_tv_app_and_wait()
-        opened_app = True
-    if not session:
-        sessions = await _controllable_sessions()
-        seen = sorted({f'{s.get("Client", "?")} ({s.get("DeviceName", "?")})' for s in sessions})
-        raise HTTPException(status_code=502, detail=(
-            f"No '{TV_JELLYFIN_CLIENT}' session on Jellyfin - open it on the TV and make sure you're signed in. "
-            f"Controllable sessions right now: {', '.join(seen) if seen else 'none'}"
+        raise HTTPException(status_code=400, detail="Only movies and episodes can be opened on the TV")
+    if not (ADB_BIN and TV_IP):
+        raise HTTPException(status_code=503, detail=(
+            "Opening titles on the TV needs ADB: install adb and authorize this machine (see the README)"
         ))
-
-    confirmed = await _play_and_confirm(session, payload.item_id)
-    if not confirmed and not opened_app:
-        # The session may be left over from an app that was closed: open the app for real and retry.
-        fresh = await _open_tv_app_and_wait()
-        if fresh:
-            opened_app = True
-            confirmed = await _play_and_confirm(fresh, payload.item_id)
-            session = fresh
-    print(f"[Cast] {item.get('Name')!r} -> {session.get('Client')}/{session.get('DeviceName')} "
-          f"v{session.get('ApplicationVersion')} confirmed={confirmed} opened_app={opened_app}")
-    if not confirmed:
-        raise HTTPException(status_code=502, detail=(
-            f"Jellyfin accepted the command, but {session.get('Client', 'the TV app')} never started playing "
-            f"'{item.get('Name')}'. The app may not support being told what to play, or it isn't signed in "
-            f"to this Jellyfin server."
-        ))
-    return {"status": "playing", "name": item.get("Name"), "opened_app": opened_app}
+    server_id, user_id = await _jf_server_id(), await _tv_jellyfin_user_id()
+    if not (_JF_GUID_RE.fullmatch(server_id) and _JF_GUID_RE.fullmatch(user_id)):
+        raise HTTPException(status_code=502, detail="Jellyfin returned an unexpected server or user id")
+    link = f"wholphin://play?serverId={server_id}&userId={user_id}&itemId={payload.item_id}"
+    try:
+        await _adb_open_link(link)
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    print(f"[Open on TV] {item.get('Name')!r}")
+    return {"status": "opened", "name": item.get("Name")}
 
 if __name__ == "__main__":
     import uvicorn
