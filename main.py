@@ -2490,6 +2490,59 @@ async def _controllable_sessions() -> List[Dict[str, Any]]:
     data = await _jf_get("/Sessions", timeout=3.0)
     return [s for s in data if s.get("SupportsRemoteControl")]
 
+def _same_item(a: Any, b: Any) -> bool:
+    return str(a or "").replace("-", "").lower() == str(b or "").replace("-", "").lower()
+
+async def _send_play_now(session_id: str, item_id: str) -> None:
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            res = await client.post(
+                f"{JELLYFIN_URL}/Sessions/{session_id}/Playing",
+                params={"playCommand": "PlayNow", "itemIds": item_id},
+                headers=_jf_headers(), content="",
+            )
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="Jellyfin unreachable")
+    if res.status_code not in (200, 204):
+        raise HTTPException(status_code=502, detail=f"Jellyfin refused the play command (HTTP {res.status_code})")
+
+async def _is_playing(session_id: str, item_id: str, seconds: int) -> bool:
+    """Jellyfin answers 204 as soon as it has handed the command to the session - that says
+    nothing about whether the TV app did anything with it. So look at the session itself."""
+    for _ in range(seconds):
+        await asyncio.sleep(1)
+        for sess in await _jf_get("/Sessions", timeout=3.0):
+            if sess.get("Id") == session_id and _same_item((sess.get("NowPlayingItem") or {}).get("Id"), item_id):
+                return True
+    return False
+
+async def _play_and_confirm(session: Dict[str, Any], item_id: str) -> bool:
+    """Sends PlayNow and checks it took effect; one retry covers an app that was still starting."""
+    for wait in (10, 8):
+        await _send_play_now(session["Id"], item_id)
+        if await _is_playing(session["Id"], item_id, wait):
+            return True
+        await asyncio.sleep(2)
+    return False
+
+async def _open_tv_app_and_wait() -> Any:
+    """Opens the TV's Jellyfin app over ADB and waits for its session. Returns the session,
+    or None if ADB isn't available or the session never showed up. ADB errors raise."""
+    entry = TV_APPS.get(TV_JELLYFIN_APP)
+    if not (ADB_BIN and entry and TV_IP):
+        return None
+    try:
+        await _adb_launch(entry["package"])
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=f"Could not open {entry['label']} on the TV: {e}")
+    for _ in range(25):                          # the app registers its session a few seconds after opening
+        await asyncio.sleep(1)
+        session = _pick_tv_session(await _controllable_sessions())
+        if session:
+            await asyncio.sleep(4)               # let it finish starting up before it gets a command
+            return session
+    return None
+
 @app.post("/api/tv/cast")
 async def tv_cast(payload: TvCastRequest):
     if not _JF_GUID_RE.fullmatch(payload.item_id):
@@ -2504,37 +2557,33 @@ async def tv_cast(payload: TvCastRequest):
     sessions = await _controllable_sessions()
     session = _pick_tv_session(sessions)
     opened_app = False
-    entry = TV_APPS.get(TV_JELLYFIN_APP)
-    if not session and ADB_BIN and entry and TV_IP:
-        try:
-            await _adb_launch(entry["package"])
-        except RuntimeError as e:
-            raise HTTPException(status_code=502, detail=f"Could not open {entry['label']} on the TV: {e}")
-        opened_app = True
-        for _ in range(25):                      # the app registers its session a few seconds after opening
-            await asyncio.sleep(1)
-            sessions = await _controllable_sessions()
-            session = _pick_tv_session(sessions)
-            if session:
-                await asyncio.sleep(1.5)         # let it finish connecting before the command
-                break
     if not session:
+        session = await _open_tv_app_and_wait()
+        opened_app = True
+    if not session:
+        sessions = await _controllable_sessions()
         seen = sorted({f'{s.get("Client", "?")} ({s.get("DeviceName", "?")})' for s in sessions})
         raise HTTPException(status_code=502, detail=(
             f"No '{TV_JELLYFIN_CLIENT}' session on Jellyfin - open it on the TV and make sure you're signed in. "
             f"Controllable sessions right now: {', '.join(seen) if seen else 'none'}"
         ))
-    try:
-        async with httpx.AsyncClient(timeout=6.0) as client:
-            res = await client.post(
-                f"{JELLYFIN_URL}/Sessions/{session['Id']}/Playing",
-                params={"playCommand": "PlayNow", "itemIds": payload.item_id},
-                headers=_jf_headers(), content="",
-            )
-    except httpx.HTTPError:
-        raise HTTPException(status_code=502, detail="Jellyfin unreachable")
-    if res.status_code not in (200, 204):
-        raise HTTPException(status_code=502, detail=f"Jellyfin refused the play command (HTTP {res.status_code})")
+
+    confirmed = await _play_and_confirm(session, payload.item_id)
+    if not confirmed and not opened_app:
+        # The session may be left over from an app that was closed: open the app for real and retry.
+        fresh = await _open_tv_app_and_wait()
+        if fresh:
+            opened_app = True
+            confirmed = await _play_and_confirm(fresh, payload.item_id)
+            session = fresh
+    print(f"[Cast] {item.get('Name')!r} -> {session.get('Client')}/{session.get('DeviceName')} "
+          f"v{session.get('ApplicationVersion')} confirmed={confirmed} opened_app={opened_app}")
+    if not confirmed:
+        raise HTTPException(status_code=502, detail=(
+            f"Jellyfin accepted the command, but {session.get('Client', 'the TV app')} never started playing "
+            f"'{item.get('Name')}'. The app may not support being told what to play, or it isn't signed in "
+            f"to this Jellyfin server."
+        ))
     return {"status": "playing", "name": item.get("Name"), "opened_app": opened_app}
 
 if __name__ == "__main__":

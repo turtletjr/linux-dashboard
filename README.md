@@ -347,6 +347,9 @@ With ADB set up, the widget shows the reason ("ADB not authorized", "That app is
 **Cast to TV says "No 'wholphin' session on Jellyfin"**
 Jellyfin only lists a TV app once it is running and signed in. Open the app on the TV once (or set up ADB so the dashboard can open it) and try again. The error lists the controllable sessions Jellyfin currently knows about; if the TV's app shows up under a different name, set `TV_JELLYFIN_CLIENT` to part of that name.
 
+**Cast to TV opens the app but nothing plays**
+Jellyfin answers "OK" as soon as it has handed the play command to the TV app, whether or not the app does anything with it, so the dashboard checks the session afterwards and retries (reopening the app over ADB if the session looked stale). If it still reports that the app "never started playing", the app either ignores remote play commands or isn't signed in to this Jellyfin server. The dashboard logs each attempt (`[Cast] ... confirmed=True/False`) in `journalctl -u dashboard`, and `curl` against Jellyfin's `/Sessions` shows what the app reports about itself (`SupportsRemoteControl`, `SupportedCommands`).
+
 ## License
 
 [MIT](LICENSE)

@@ -1714,7 +1714,7 @@ async function updatePiholeData() {
             if (castBusy) return;
             castBusy = true;
             btn.disabled = true;
-            showCastMessage(`Starting "${name}"... (opens the app first if needed)`, false, true);
+            showCastMessage(`Starting "${name}"... (can take up to 30s if the app has to open first)`, false, true);
             try {
                 const res = await fetch('/api/tv/cast', {
                     method: 'POST',
