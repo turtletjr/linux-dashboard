@@ -153,6 +153,8 @@ the real `.env`, it's already covered by `.gitignore`).
 | `MEDIA_CHECK_SCRIPT` | `check_media_headers.sh` next to `main.py` | same |
 | `TV_IP` | *(empty)* | TV Remote widget — LAN IP of a Google TV / Android TV. Blank switches the widget off |
 | `TV_CERT_DIR` | `~/.config/dashboard-tv` | same — where the pairing certificate is stored (outside the repo) |
+| `TV_ADB` | `1` | TV Remote — set `0` to never use ADB for launching apps |
+| `TV_ADB_PORT` | `5555` | same — the TV's network-debugging port |
 
 Missing `DASHBOARD_USERNAME`/`DASHBOARD_PASSWORD` is treated differently: the
 app fails closed and returns a `500` on every request until both are set,
@@ -222,7 +224,7 @@ sudo journalctl -u dashboard -n 200 | grep -i "Config Warning"   # should be emp
 | Windscribe Location Switcher | `windscribe-switch` — a bash script at `/usr/local/bin/windscribe-switch` (not part of this repo) | Switches between pre-configured Windscribe WireGuard locations, with handshake verification and automatic revert if the new location fails to connect. This app only shells out to it — see the script's own header comment for the expected `/etc/wireguard/locations/*.env` layout. |
 | Media Integrity | `check_media_headers.sh` (in this repo) via `POST /api/media/check`, `POST /api/media/cancel`, `GET /api/media/status` | Read-only scan for blank, truncated or corrupt video files. Three modes: *header* (first bytes only, fast), *probe* (`ffprobe` reads every packet — reads the whole drive) and *full* (`ffmpeg` decodes everything — very slow on a Pi). Runs as one background job at a time, at low CPU/disk priority, with a progress bar and a Cancel button. Results come from the script's report file and survive a dashboard restart; **Re-check listed** re-tests only the files from the last report. Refuses to run when the library isn't mounted, so an unmounted drive can't produce a false "clean". It never modifies, moves or deletes media. |
 | BitTorrent Engine | qBittorrent WebUI API (`/api/v2/...`) | Session-cookie auth, cached and re-authenticated on expiry |
-| TV Remote | Android TV Remote protocol v2 (port 6466) via `androidtvremote2` — `GET /api/tv/status`, `POST /api/tv/key`, `POST /api/tv/app` | D-pad, back/home/menu/power, volume, media keys and an app launcher. One long-lived connection that reconnects by itself. Pair once with `python tools/tv_remote_test.py pair`, as the same user the service runs as (the certificate lives in `~/.config/dashboard-tv`). Only key names in `TV_KEYS` and apps in `TV_APPS` (both in `main.py`) are accepted, so the API can't forward arbitrary commands to the TV. The widget shows the foreground app's package name, which is the easiest way to find the right ID for `TV_APPS`. |
+| TV Remote | Android TV Remote protocol v2 (port 6466) via `androidtvremote2` — `GET /api/tv/status`, `POST /api/tv/key`, `POST /api/tv/app` | D-pad, back/home/menu/power, volume, media keys and an app launcher. One long-lived connection that reconnects by itself. Pair once with `python tools/tv_remote_test.py pair`, as the same user the service runs as (the certificate lives in `~/.config/dashboard-tv`). Only key names in `TV_KEYS` and apps in `TV_APPS` (both in `main.py`) are accepted, so the API can't forward arbitrary commands to the TV. The widget shows the foreground app's package name, which is the easiest way to find the right ID for `TV_APPS`. **App launching uses ADB** when `adb` is installed (`sudo apt install adb`): enable Developer options → USB/network debugging on the TV, run `adb connect <tv-ip>:5555` once as the service's user and accept the prompt (tick *Always allow*). Without ADB it falls back to deep links, which many TVs reject. |
 
 ## Security
 
@@ -336,8 +338,8 @@ stuck mid-transition and need a manual `sudo windscribe-switch down`.
 **TV Remote badge says Offline, or "Not paired"**
 Check `TV_IP` in `.env` and that the TV is on the same LAN (`nc -zv <tv-ip> 6466`). "Not paired" means the service's user has no certificate: run `python tools/tv_remote_test.py pair` as that user (the certificate is per-user, in `~/.config/dashboard-tv`) — the dashboard retries on its own every 30s, no restart needed. A TV that is fully off or asleep also shows Offline until it wakes.
 
-**An app button does nothing**
-The dashboard sends the app's package name (or deep link) from `TV_APPS` and the TV replies asynchronously, so a wrong ID only shows up as an error in `journalctl -u dashboard`. Open the app on the TV and read the package name from the widget's "Foreground:" line.
+**An app button does nothing, or opens the wrong app**
+With ADB set up, the widget shows the reason ("ADB not authorized", "That app is not installed on the TV"). Without it the dashboard can only ask the TV to open a deep link, and the TV's rejection shows up only in `journalctl -u dashboard` — the widget then says the request was "sent", not "launching". Install `adb` and authorize the Pi, and check the package name by opening the app on the TV and reading the widget's "Foreground:" line.
 
 ## License
 

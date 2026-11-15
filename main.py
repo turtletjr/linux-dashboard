@@ -3,6 +3,7 @@ import collections
 import json
 import os
 import secrets
+import shutil
 import signal
 import tempfile
 import time
@@ -2246,14 +2247,25 @@ TV_KEYS = frozenset({
     "MEDIA_PLAY_PAUSE", "MEDIA_PLAY", "MEDIA_PAUSE", "MEDIA_STOP",
     "MEDIA_REWIND", "MEDIA_FAST_FORWARD", "MEDIA_PREVIOUS", "MEDIA_NEXT",
 })
-# id -> (button label, package name or deep link). Edit to match what is on your TV.
-# The package of whatever is in the foreground is shown in the widget, which is the
-# easiest way to find the right value for an app.
-TV_APPS: Dict[str, Any] = {
-    "wholphin": ("Wholphin", "com.github.damontecres.wholphin"),
-    "youtube": ("YouTube", "https://www.youtube.com"),
-    "netflix": ("Netflix", "https://www.netflix.com/title"),
+# id -> {label, package, link?}. Edit to match what is on your TV. The package of whatever
+# is in the foreground is shown in the widget, which is the easiest way to find the right one.
+# Launching prefers ADB (opens any installed app by package name; see TV_ADB below). Without
+# ADB it falls back to `link`, a deep link the TV hands to whichever app registered for it -
+# some TVs, including the TCL this was built on, reject package links and open the wrong app
+# for unknown ones, so a link is only worth setting for apps known to handle it.
+TV_APPS: Dict[str, Dict[str, str]] = {
+    "wholphin": {"label": "Wholphin", "package": "com.github.damontecres.wholphin"},
+    "youtube": {"label": "YouTube", "package": "com.google.android.youtube.tv", "link": "https://www.youtube.com"},
+    "netflix": {"label": "Netflix", "package": "com.netflix.ninja", "link": "https://www.netflix.com/title"},
 }
+_PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
+
+# ADB over the network (TV: Developer options -> USB/network debugging; Pi: `apt install adb`,
+# then `adb connect <tv-ip>:5555` once and accept the prompt on the TV). Used only to launch
+# apps. Set TV_ADB=0 to turn it off.
+TV_ADB_PORT = os.environ.get("TV_ADB_PORT", "5555").strip() or "5555"
+ADB_BIN = shutil.which("adb") if os.environ.get("TV_ADB", "1").strip() != "0" else None
+_adb_lock = asyncio.Lock()
 
 tv_remote: Any = None
 tv_state: Dict[str, Any] = {
@@ -2332,6 +2344,40 @@ async def _tv_ready():
             raise HTTPException(status_code=503, detail="TV is not reachable right now")
     return tv_remote
 
+async def _run_adb(*args: str, timeout: float = 10.0) -> str:
+    """Runs adb with an argument list (no shell) and returns stdout+stderr."""
+    proc = await asyncio.create_subprocess_exec(
+        ADB_BIN, *args,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+    )
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise RuntimeError("adb timed out")
+    return out.decode(errors="replace")
+
+async def _adb_launch(package: str) -> None:
+    """Opens an installed app by package name. Raises RuntimeError with a readable reason."""
+    if not _PACKAGE_RE.match(package):
+        raise RuntimeError("invalid package name")
+    serial = f"{TV_IP}:{TV_ADB_PORT}"
+    async with _adb_lock:
+        out = await _run_adb("connect", serial)
+        low = out.lower()
+        if "unauthorized" in low or "failed to authenticate" in low:
+            raise RuntimeError("ADB not authorized - accept the debugging prompt on the TV (tick 'Always allow')")
+        if "connected to" not in low:
+            raise RuntimeError(f"ADB could not connect: {out.strip()[:120] or 'no response'}")
+        out = await _run_adb("-s", serial, "shell", "monkey", "-p", package,
+                             "-c", "android.intent.category.LAUNCHER", "1")
+    if "No activities found" in out or "monkey aborted" in out:
+        raise RuntimeError("That app is not installed on the TV")
+    if "Events injected: 1" not in out:
+        raise RuntimeError(f"Unexpected ADB response: {out.strip()[-120:]}")
+
 @app.get("/api/tv/status")
 async def get_tv_status():
     return {
@@ -2340,7 +2386,8 @@ async def get_tv_status():
         "is_on": tv_state["is_on"],
         "current_app": tv_state["current_app"],
         "error": tv_state["error"],
-        "apps": [{"id": app_id, "label": label} for app_id, (label, _) in TV_APPS.items()],
+        "adb": bool(ADB_BIN),
+        "apps": [{"id": app_id, "label": a["label"]} for app_id, a in TV_APPS.items()],
     }
 
 @app.post("/api/tv/key")
@@ -2360,12 +2407,24 @@ async def tv_launch_app(payload: TvAppRequest):
     entry = TV_APPS.get(payload.app)
     if not entry:
         raise HTTPException(status_code=404, detail="Unknown app")
+    adb_error = ""
+    if ADB_BIN:
+        try:
+            await _adb_launch(entry["package"])
+            return {"status": "launched", "app": payload.app, "method": "adb"}
+        except RuntimeError as e:
+            adb_error = str(e)
+            if not entry.get("link"):
+                raise HTTPException(status_code=502, detail=adb_error)
+    # Fallback: ask the TV to open a deep link. The TV answers asynchronously, so a rejection
+    # can't be detected here - the response says "requested", not "launched".
+    link = entry.get("link") or entry["package"]
     remote = await _tv_ready()
     try:
-        remote.send_launch_app_command(entry[1])
+        remote.send_launch_app_command(link)
     except ConnectionClosed:
         raise HTTPException(status_code=503, detail="TV connection dropped - reconnecting")
-    return {"status": "launched", "app": payload.app}
+    return {"status": "requested", "app": payload.app, "method": "link", "adb_error": adb_error}
 
 if __name__ == "__main__":
     import uvicorn

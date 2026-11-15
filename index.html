@@ -1554,7 +1554,9 @@ async function updatePiholeData() {
                     body: JSON.stringify({ app })
                 });
                 if (res.ok) {
-                    showTvMessage(`Launching ${label}...`, false);
+                    const d = await res.json().catch(() => ({}));
+                    showTvMessage(d.method === 'adb' ? `Launching ${label}...`
+                        : `Launch request sent for ${label} (the TV may ignore it)`, false);
                 } else {
                     const err = await res.json().catch(() => ({}));
                     showTvMessage(err.detail || `TV error ${res.status}`, true);
