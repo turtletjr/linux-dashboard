@@ -2426,6 +2426,117 @@ async def tv_launch_app(payload: TvAppRequest):
         raise HTTPException(status_code=503, detail="TV connection dropped - reconnecting")
     return {"status": "requested", "app": payload.app, "method": "link", "adb_error": adb_error}
 
+# --- Cast to TV: browse Jellyfin, start playback on the TV's Jellyfin client ---
+# The dashboard finds the TV's Jellyfin session (Wholphin by default) and sends it a PlayNow
+# command through Jellyfin's own API. If the app is not running, it is opened over ADB first.
+# TV_JELLYFIN_CLIENT is matched against each session's client / device name, case-insensitively.
+TV_JELLYFIN_CLIENT = os.environ.get("TV_JELLYFIN_CLIENT", "Wholphin").strip().lower()
+TV_JELLYFIN_APP = os.environ.get("TV_JELLYFIN_APP", "wholphin").strip()   # id in TV_APPS to open first
+_JF_GUID_RE = re.compile(r"[0-9a-fA-F]{32}|[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
+_CAST_TYPES = ("Movie", "Episode")
+
+class TvCastRequest(BaseModel):
+    item_id: str
+
+def _jf_headers() -> Dict[str, str]:
+    return {"Authorization": f'MediaBrowser Token="{JELLYFIN_API_KEY}"', "Accept": "application/json"}
+
+async def _jf_get(path: str, params: Any = None, timeout: float = 6.0) -> Any:
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            res = await client.get(f"{JELLYFIN_URL}{path}", params=params, headers=_jf_headers())
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="Jellyfin unreachable")
+    if res.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Jellyfin returned HTTP {res.status_code}")
+    return res.json()
+
+def _jf_item_summary(item: Dict[str, Any]) -> Dict[str, Any]:
+    kind = item.get("Type")
+    if kind == "Episode":
+        subtitle = f"S{item.get('ParentIndexNumber') or 0:02d}E{item.get('IndexNumber') or 0:02d}"
+    else:
+        subtitle = str(item.get("ProductionYear") or "")
+    ticks = item.get("RunTimeTicks") or 0
+    return {
+        "id": item.get("Id"), "name": item.get("Name") or "Untitled", "type": kind,
+        "subtitle": subtitle, "minutes": int(ticks // 600_000_000) if ticks else 0,
+    }
+
+@app.get("/api/tv/library")
+async def tv_library(q: str = "", series: str = ""):
+    """Latest additions, a title search, or the episodes of one series."""
+    params: Dict[str, Any] = {"recursive": "true"}
+    if series:
+        if not _JF_GUID_RE.fullmatch(series):
+            raise HTTPException(status_code=400, detail="Invalid series id")
+        params.update(parentId=series, includeItemTypes="Episode", sortBy="ParentIndexNumber,IndexNumber",
+                      sortOrder="Ascending", limit=300)
+    elif q.strip():
+        params.update(searchTerm=q.strip()[:80], includeItemTypes="Movie,Series", sortBy="SortName", limit=30)
+    else:
+        params.update(includeItemTypes="Movie,Series", sortBy="DateCreated", sortOrder="Descending", limit=24)
+    data = await _jf_get("/Items", params)
+    return {"items": [_jf_item_summary(i) for i in data.get("Items", []) if i.get("Id")]}
+
+def _pick_tv_session(sessions: List[Dict[str, Any]]) -> Any:
+    matches = [
+        s for s in sessions
+        if TV_JELLYFIN_CLIENT in f'{s.get("Client", "")} {s.get("DeviceName", "")}'.lower()
+    ]
+    return max(matches, key=lambda s: s.get("LastActivityDate", "")) if matches else None
+
+async def _controllable_sessions() -> List[Dict[str, Any]]:
+    data = await _jf_get("/Sessions", timeout=3.0)
+    return [s for s in data if s.get("SupportsRemoteControl")]
+
+@app.post("/api/tv/cast")
+async def tv_cast(payload: TvCastRequest):
+    if not _JF_GUID_RE.fullmatch(payload.item_id):
+        raise HTTPException(status_code=400, detail="Invalid item id")
+    items = (await _jf_get("/Items", {"ids": payload.item_id})).get("Items") or []
+    if not items:
+        raise HTTPException(status_code=404, detail="Item not found in Jellyfin")
+    item = items[0]
+    if item.get("Type") not in _CAST_TYPES:
+        raise HTTPException(status_code=400, detail="Only movies and episodes can be played directly")
+
+    sessions = await _controllable_sessions()
+    session = _pick_tv_session(sessions)
+    opened_app = False
+    entry = TV_APPS.get(TV_JELLYFIN_APP)
+    if not session and ADB_BIN and entry and TV_IP:
+        try:
+            await _adb_launch(entry["package"])
+        except RuntimeError as e:
+            raise HTTPException(status_code=502, detail=f"Could not open {entry['label']} on the TV: {e}")
+        opened_app = True
+        for _ in range(25):                      # the app registers its session a few seconds after opening
+            await asyncio.sleep(1)
+            sessions = await _controllable_sessions()
+            session = _pick_tv_session(sessions)
+            if session:
+                await asyncio.sleep(1.5)         # let it finish connecting before the command
+                break
+    if not session:
+        seen = sorted({f'{s.get("Client", "?")} ({s.get("DeviceName", "?")})' for s in sessions})
+        raise HTTPException(status_code=502, detail=(
+            f"No '{TV_JELLYFIN_CLIENT}' session on Jellyfin - open it on the TV and make sure you're signed in. "
+            f"Controllable sessions right now: {', '.join(seen) if seen else 'none'}"
+        ))
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            res = await client.post(
+                f"{JELLYFIN_URL}/Sessions/{session['Id']}/Playing",
+                params={"playCommand": "PlayNow", "itemIds": payload.item_id},
+                headers=_jf_headers(), content="",
+            )
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="Jellyfin unreachable")
+    if res.status_code not in (200, 204):
+        raise HTTPException(status_code=502, detail=f"Jellyfin refused the play command (HTTP {res.status_code})")
+    return {"status": "playing", "name": item.get("Name"), "opened_app": opened_app}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

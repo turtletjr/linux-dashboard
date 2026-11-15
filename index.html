@@ -49,6 +49,7 @@
       }
       .tv-btn:hover { background-color: rgba(51, 65, 85, 0.6); border-color: rgb(100, 116, 139); }
       .tv-btn:active { transform: scale(0.95); background-color: rgba(16, 185, 129, 0.2); border-color: rgb(16, 185, 129); }
+      .tv-btn.hidden { display: none; }   /* .tv-btn's display:flex would otherwise beat Tailwind's hidden */
       .tv-btn svg { width: 1.1rem; height: 1.1rem; pointer-events: none; }
       .tv-btn-ok { background-color: rgba(16, 185, 129, 0.12); border-color: rgba(16, 185, 129, 0.4); color: rgb(110, 231, 183); }
       .tv-btn-power { color: rgb(251, 113, 133); }
@@ -406,6 +407,24 @@
                         <div id="tv-apps" class="flex flex-wrap gap-2"></div>
                         <div id="tv-msg" class="hidden text-[10px] font-mono"></div>
                         <div id="tv-now" class="text-[10px] font-mono text-slate-500 truncate border-t border-slate-700/40 pt-1.5"></div>
+                    </div>
+                </div>
+                <!-- Cast to TV Widget -->
+                <div class="widget-card">
+                    <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-2">
+                        <i data-lucide="cast" class="w-4 h-4 text-purple-400"></i> Cast to TV
+                    </h2>
+                    <div class="space-y-2">
+                        <input id="cast-search" type="search" placeholder="Search movies and shows..." autocomplete="off"
+                               class="w-full rounded-lg bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500">
+                        <div class="flex items-center gap-2 min-h-[1.5rem]">
+                            <button id="cast-back" type="button" class="tv-btn px-2 hidden" style="min-height:1.5rem" data-cast-back>&larr; Back</button>
+                            <div id="cast-heading" class="text-[10px] font-mono uppercase tracking-wide text-slate-500 truncate">Latest additions</div>
+                        </div>
+                        <div id="cast-msg" class="hidden text-[11px] font-mono break-words"></div>
+                        <div id="cast-list" class="space-y-2 max-h-[26rem] overflow-y-auto pr-1">
+                            <div class="text-xs text-slate-500 py-2">Loading...</div>
+                        </div>
                     </div>
                 </div>
                 <!-- Public IP Widget -->
@@ -1636,6 +1655,105 @@ async function updatePiholeData() {
             }
         }
 
+        // --- Cast to TV: browse Jellyfin here, start playback on the TV's Jellyfin client ---
+        // Play is an explicit button on each row (not a tap on the whole row) so scrolling a
+        // list on a phone can't interrupt whatever is already playing.
+        let castSeries = null, castBusy = false, castSeq = 0, castMsgTimer = null, castSearchTimer = null;
+
+        function showCastMessage(text, isError, sticky) {
+            const el = document.getElementById('cast-msg');
+            if (!el) return;
+            el.textContent = text;
+            el.className = `text-[11px] font-mono break-words ${isError ? 'text-rose-400' : 'text-slate-400'}`;
+            clearTimeout(castMsgTimer);
+            if (!sticky) castMsgTimer = setTimeout(() => el.classList.add('hidden'), isError ? 9000 : 4000);
+        }
+
+        function castRowHtml(it) {
+            const isSeries = it.type === 'Series';
+            const meta = [it.subtitle, it.minutes ? `${it.minutes} min` : ''].filter(Boolean).join(' \u00b7 ');
+            const attr = isSeries ? 'data-cast-series' : 'data-cast-play';
+            return `<div class="flex items-center gap-3 p-2 rounded-lg bg-slate-900/40 border border-slate-700/40">
+                <img class="cast-poster w-10 h-14 rounded object-cover bg-slate-800 shrink-0" loading="lazy" alt="" src="/api/jellyfin/poster/${escapeHtml(it.id)}">
+                <div class="min-w-0 flex-1">
+                    <div class="text-sm text-slate-200 truncate">${escapeHtml(it.name)}</div>
+                    <div class="text-[10px] font-mono text-slate-500 truncate">${escapeHtml(meta)}</div>
+                </div>
+                <button type="button" class="tv-btn px-3 shrink-0" ${attr}="${escapeHtml(it.id)}" data-cast-name="${escapeHtml(it.name)}">${isSeries ? 'Episodes' : 'Play'}</button>
+            </div>`;
+        }
+
+        async function loadCastLibrary() {
+            const list = document.getElementById('cast-list');
+            if (!list) return;
+            const q = document.getElementById('cast-search').value.trim();
+            const params = new URLSearchParams();
+            if (castSeries) params.set('series', castSeries.id); else if (q) params.set('q', q);
+            document.getElementById('cast-heading').textContent =
+                castSeries ? castSeries.name : (q ? `Results for "${q}"` : 'Latest additions');
+            document.getElementById('cast-back').classList.toggle('hidden', !castSeries);
+            const seq = ++castSeq;   // ignore answers that arrive after a newer search was started
+            try {
+                const res = await fetch('/api/tv/library?' + params.toString());
+                const body = await res.json().catch(() => ({}));
+                if (seq !== castSeq) return;
+                if (!res.ok) {
+                    list.innerHTML = `<div class="text-xs text-rose-400 py-2">${escapeHtml(body.detail || `Error ${res.status}`)}</div>`;
+                    return;
+                }
+                list.innerHTML = (body.items || []).length
+                    ? body.items.map(castRowHtml).join('')
+                    : '<div class="text-xs text-slate-500 py-2">Nothing found</div>';
+                list.scrollTop = 0;
+            } catch (e) {
+                if (seq === castSeq) list.innerHTML = '<div class="text-xs text-rose-400 py-2">Could not reach the dashboard</div>';
+            }
+        }
+
+        async function castPlay(id, name, btn) {
+            if (castBusy) return;
+            castBusy = true;
+            btn.disabled = true;
+            showCastMessage(`Starting "${name}"... (opens the app first if needed)`, false, true);
+            try {
+                const res = await fetch('/api/tv/cast', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ item_id: id })
+                });
+                const d = await res.json().catch(() => ({}));
+                if (res.ok) showCastMessage(`Playing on TV: ${d.name || name}`, false);
+                else showCastMessage(d.detail || `Error ${res.status}`, true);
+            } catch (e) {
+                showCastMessage('Request failed - check your connection', true);
+            } finally {
+                castBusy = false;
+                btn.disabled = false;
+            }
+        }
+
+        function initCast() {
+            const input = document.getElementById('cast-search');
+            if (!input) return;
+            input.addEventListener('input', () => {
+                castSeries = null;
+                clearTimeout(castSearchTimer);
+                castSearchTimer = setTimeout(loadCastLibrary, 350);
+            });
+            document.addEventListener('click', (e) => {
+                const play = e.target.closest('[data-cast-play]');
+                if (play) { castPlay(play.dataset.castPlay, play.dataset.castName || 'item', play); return; }
+                const series = e.target.closest('[data-cast-series]');
+                if (series) { castSeries = { id: series.dataset.castSeries, name: series.dataset.castName || 'Series' }; loadCastLibrary(); return; }
+                if (e.target.closest('[data-cast-back]')) { castSeries = null; loadCastLibrary(); }
+            });
+            // Posters that don't exist come back 404; hide the broken-image icon.
+            document.addEventListener('error', (e) => {
+                if (e.target && e.target.classList && e.target.classList.contains('cast-poster')) e.target.style.visibility = 'hidden';
+            }, true);
+            loadCastLibrary();
+        }
+
         // --- Minimizable widgets + mobile ordering ---
         // Runs once at load and enhances every .widget-card in place: the content under the
         // heading is moved (not cloned) into a .widget-body wrapper, so every element id and
@@ -1645,7 +1763,7 @@ async function updatePiholeData() {
 
         // Mobile stacking order (desktop keeps its three-column layout). Lower = higher on the page.
         const MOBILE_ORDER = [
-            'active-streams', 'tv-remote', 'hardware-controls', 'core-services-daemon', 'system-hardware',
+            'active-streams', 'tv-remote', 'cast-to-tv', 'hardware-controls', 'core-services-daemon', 'system-hardware',
             'network-protection', 'bittorrent-engine', 'tunnel-routing-topology', 'media-integrity',
             'process-monitor', 'package-manager', 'public-ip', 'pi-hole-updates',
             'system-compute-timeline', 'i-o-throughput-history-kb-s'
@@ -1766,6 +1884,7 @@ async function updatePiholeData() {
         updateMediaWidget();
         updateTvStatus();
         setInterval(updateTvStatus, 5000);
+        initCast();
         lucide.createIcons();
     </script>
 </body>
