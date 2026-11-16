@@ -7,6 +7,7 @@ import shutil
 import signal
 import tempfile
 import time
+import traceback
 from typing import Dict, Any, List, Literal
 from fastapi import FastAPI, HTTPException, BackgroundTasks, APIRouter, Depends
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -2472,7 +2473,10 @@ async def _jf_get(path: str, params: Any = None, timeout: float = 6.0) -> Any:
         raise HTTPException(status_code=502, detail="Jellyfin unreachable")
     if res.status_code != 200:
         raise HTTPException(status_code=502, detail=f"Jellyfin returned HTTP {res.status_code}")
-    return res.json()
+    try:
+        return res.json()
+    except ValueError:
+        raise HTTPException(status_code=502, detail="Jellyfin returned something that isn't JSON - check JELLYFIN_URL")
 
 def _jf_item_summary(item: Dict[str, Any]) -> Dict[str, Any]:
     kind = item.get("Type")
@@ -2546,14 +2550,21 @@ async def tv_open(payload: TvOpenRequest):
         raise HTTPException(status_code=503, detail=(
             "Opening titles on the TV needs ADB: install adb and authorize this machine (see the README)"
         ))
-    server_id, user_id = await _jf_server_id(), await _tv_jellyfin_user_id()
-    if not (_JF_GUID_RE.fullmatch(server_id) and _JF_GUID_RE.fullmatch(user_id)):
-        raise HTTPException(status_code=502, detail="Jellyfin returned an unexpected server or user id")
-    link = f"wholphin://play?serverId={server_id}&userId={user_id}&itemId={payload.item_id}"
     try:
+        server_id, user_id = await _jf_server_id(), await _tv_jellyfin_user_id()
+        if not (_JF_GUID_RE.fullmatch(server_id) and _JF_GUID_RE.fullmatch(user_id)):
+            raise HTTPException(status_code=502, detail="Jellyfin returned an unexpected server or user id")
+        link = f"wholphin://play?serverId={server_id}&userId={user_id}&itemId={payload.item_id}"
         await _adb_open_link(link)
+    except HTTPException:
+        raise
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e))
+    except Exception as e:
+        # Anything unexpected: keep the traceback in the journal and show the cause in the widget,
+        # instead of a bare "Error 500".
+        traceback.print_exc()
+        raise HTTPException(status_code=502, detail=f"Unexpected error: {type(e).__name__}: {e}")
     print(f"[Open on TV] {item.get('Name')!r}")
     return {"status": "opened", "name": item.get("Name")}
 

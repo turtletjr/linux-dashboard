@@ -1699,7 +1699,7 @@ async function updatePiholeData() {
                 const body = await res.json().catch(() => ({}));
                 if (seq !== castSeq) return;
                 if (!res.ok) {
-                    list.innerHTML = `<div class="text-xs text-rose-400 py-2">${escapeHtml(body.detail || `Error ${res.status}`)}</div>`;
+                    list.innerHTML = `<div class="text-xs text-rose-400 py-2">${escapeHtml(body.detail || `Dashboard error ${res.status} - see: journalctl -u dashboard`)}</div>`;
                     return;
                 }
                 list.innerHTML = (body.items || []).length
@@ -1724,7 +1724,7 @@ async function updatePiholeData() {
                 });
                 const d = await res.json().catch(() => ({}));
                 if (res.ok) showCastMessage(`Opened on TV: ${d.name || name} - press Play there`, false);
-                else showCastMessage(d.detail || `Error ${res.status}`, true);
+                else showCastMessage(d.detail || `Dashboard error ${res.status} - see: journalctl -u dashboard`, true);
             } catch (e) {
                 showCastMessage('Request failed - check your connection', true);
             } finally {
