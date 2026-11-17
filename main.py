@@ -2355,13 +2355,41 @@ async def _run_adb(*args: str, timeout: float = 10.0) -> str:
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        raise RuntimeError("adb timed out")
+        # The client may already have exited while something it started still holds the pipe open,
+        # in which case there is nothing left to kill.
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            await proc.wait()
+        raise RuntimeError(f"adb {args[0] if args else ''} timed out")
     return out.decode(errors="replace")
+
+async def _ensure_adb_server() -> None:
+    """Starts the adb background server with all its output discarded.
+
+    If a client we are reading through a pipe has to start the server itself, the server inherits
+    that pipe and never closes it, so the read hangs until it times out. (This is also why a
+    dashboard restart matters: it stops any server the dashboard had started.) Starting the server
+    here with no pipes attached avoids that, and returns at once if it is already running."""
+    proc = await asyncio.create_subprocess_exec(
+        ADB_BIN, "start-server",
+        stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=15)
+    except asyncio.TimeoutError:
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+        raise RuntimeError("adb server did not start")
 
 async def _adb_connect() -> str:
     """Connects to the TV (a no-op if already connected) and returns its adb serial."""
+    await _ensure_adb_server()
     serial = f"{TV_IP}:{TV_ADB_PORT}"
     out = await _run_adb("connect", serial)
     low = out.lower()
