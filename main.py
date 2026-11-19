@@ -1,5 +1,6 @@
 import asyncio
 import collections
+import contextlib
 import json
 import os
 import secrets
@@ -319,6 +320,13 @@ class PackageOperation(BaseModel):
 # Config Details — populated from environment variables (see .env.example)
 JELLYFIN_URL = os.environ.get("JELLYFIN_URL", "http://192.168.1.10:8096")
 JELLYFIN_API_KEY = os.environ.get("JELLYFIN_API_KEY", "")
+
+def _jf_headers(accept_json: bool = True) -> Dict[str, str]:
+    """Auth header for every Jellyfin call; JSON endpoints also ask for a JSON reply."""
+    headers = {"Authorization": f'MediaBrowser Token="{JELLYFIN_API_KEY}"'}
+    if accept_json:
+        headers["Accept"] = "application/json"
+    return headers
 PIHOLE_URL = os.environ.get("PIHOLE_URL", "http://192.168.1.10/api")
 PIHOLE_PASSWORD = os.environ.get("PIHOLE_PASSWORD", "")
 QBITTORRENT_URL = os.environ.get("QBITTORRENT_URL", "http://192.168.1.10:8080")
@@ -364,7 +372,7 @@ async def serve_dashboard_frontend():
     html_path = os.path.join(os.path.dirname(__file__), "index.html")
     if os.path.exists(html_path):
         return FileResponse(html_path)
-    elif os.path.exists("index.html"):
+    if os.path.exists("index.html"):
         return FileResponse("index.html")
     raise HTTPException(status_code=404, detail="index.html file not found.")
 
@@ -785,7 +793,7 @@ async def get_service_main_pids() -> Dict[int, str]:
 def format_speed(bytes_per_sec: float) -> str:
     if bytes_per_sec < 1024:
         return f"{bytes_per_sec:.0f} B/s"
-    elif bytes_per_sec < 1024 * 1024:
+    if bytes_per_sec < 1024 * 1024:
         return f"{bytes_per_sec / 1024:.1f} KB/s"
     return f"{bytes_per_sec / (1024 * 1024):.1f} MB/s"
 
@@ -905,10 +913,8 @@ async def update_external_requests_map_loop():
                         {d["domain"]: d["count"] for d in res.json().get("domains", [])}
                         if res.status_code == 200 else {}
                     )
-                    try:
+                    with contextlib.suppress(Exception):
                         await client.delete(f"{PIHOLE_URL}/auth", headers={"X-FTL-SID": sid})
-                    except Exception:
-                        pass
                 else:
                     top_domains = {}
 
@@ -923,7 +929,7 @@ async def update_external_requests_map_loop():
             # single slowest lookup.
             domains = list(domain_hits.keys())
             resolved = await asyncio.gather(*(resolve_domain_to_ip(d) for d in domains))
-            domain_to_ip = {d: ip for d, ip in zip(domains, resolved) if ip}
+            domain_to_ip = {d: ip for d, ip in zip(domains, resolved, strict=True) if ip}
 
             if domain_to_ip:
                 geo = await geolocate_ips(list(set(domain_to_ip.values())))
@@ -998,7 +1004,7 @@ async def update_network_speeds_loop():
     
     def format_bytes(bytes_val):
         if bytes_val < 1024: return f"{bytes_val} B/s"
-        elif bytes_val < 1024 * 1024: return f"{bytes_val/1024:.1f} KB/s"
+        if bytes_val < 1024 * 1024: return f"{bytes_val/1024:.1f} KB/s"
         return f"{bytes_val/(1024*1024):.1f} MB/s"
 
     while True:
@@ -1270,7 +1276,7 @@ async def update_service_telemetry_loop():
             # matching the original per-request behavior)
             jf_version = "v--"
             jf_playing = []
-            headers = {"Authorization": f'MediaBrowser Token="{JELLYFIN_API_KEY}"', "Accept": "application/json"}
+            headers = _jf_headers()
             async with httpx.AsyncClient(timeout=1.5) as client:
                 try:
                     system_info_res = await client.get(f"{JELLYFIN_URL}/System/Info", headers=headers)
@@ -1432,7 +1438,7 @@ async def jellyfin_poster(item_id: str):
     # else so the path segment can't be steered at other Jellyfin endpoints.
     if not re.fullmatch(r"[0-9a-fA-F]{32}|[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", item_id):
         raise HTTPException(status_code=400, detail="Invalid item id")
-    headers = {"Authorization": f'MediaBrowser Token="{JELLYFIN_API_KEY}"'}
+    headers = _jf_headers(accept_json=False)
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             res = await client.get(
@@ -1440,7 +1446,7 @@ async def jellyfin_poster(item_id: str):
                 params={"maxHeight": 120}, headers=headers,
             )
     except httpx.HTTPError:
-        raise HTTPException(status_code=502, detail="Jellyfin unreachable")
+        raise HTTPException(status_code=502, detail="Jellyfin unreachable") from None
     ctype = res.headers.get("content-type", "")
     if res.status_code == 404:
         raise HTTPException(status_code=404, detail="No poster")
@@ -1453,10 +1459,7 @@ async def jellyfin_poster(item_id: str):
 
 @app.post("/api/jellyfin/subtitles/toggle")
 async def toggle_active_subtitles(payload: SubtitleToggleRequest):
-    headers = {
-        "Authorization": f'MediaBrowser Token="{JELLYFIN_API_KEY}"',
-        "Accept": "application/json"
-    }
+    headers = _jf_headers()
     
     async with httpx.AsyncClient() as client:
         try:
@@ -1511,7 +1514,7 @@ async def toggle_active_subtitles(payload: SubtitleToggleRequest):
             return {"status": "success", "message": f"English subtitles {state_msg}."}
             
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Jellyfin subtitle toggle error: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Jellyfin subtitle toggle error: {str(e)}") from None
 
 @app.get("/api/dashboard/metrics")
 async def get_dashboard_metrics():
@@ -1596,7 +1599,7 @@ async def control_unmount(payload: UnmountRequest):
     try:
         current = {m["mount_point"]: m for m in read_mounts()}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Could not read mounts: {e}")
+        raise HTTPException(status_code=500, detail=f"Could not read mounts: {e}") from None
     if payload.mount_point not in current:
         raise HTTPException(status_code=404, detail="That drive is not currently mounted")
     if payload.mount_point in PROTECTED_MOUNTS:
@@ -1616,7 +1619,7 @@ async def control_unmount(payload: UnmountRequest):
             _, stderr = await asyncio.wait_for(proc.communicate(), timeout=UNMOUNT_TIMEOUT)
         except asyncio.TimeoutError:
             proc.kill()
-            raise HTTPException(status_code=504, detail="Unmount timed out — check the server directly")
+            raise HTTPException(status_code=504, detail="Unmount timed out — check the server directly") from None
     if proc.returncode != 0:
         msg = stderr.decode(errors="replace").strip() or f"umount exited with code {proc.returncode}"
         raise HTTPException(status_code=409, detail=msg)
@@ -1639,7 +1642,7 @@ async def control_mount_all():
             out, err = await asyncio.wait_for(proc.communicate(), timeout=MOUNT_ALL_TIMEOUT)
         except asyncio.TimeoutError:
             proc.kill()
-            raise HTTPException(status_code=504, detail="Mount timed out — check the server directly")
+            raise HTTPException(status_code=504, detail="Mount timed out — check the server directly") from None
     msg = "\n".join(t for t in (out.decode(errors="replace").strip(), err.decode(errors="replace").strip()) if t)
     if proc.returncode == 0:
         return {"status": "success", "message": msg}
@@ -1659,9 +1662,9 @@ async def get_windscribe_locations():
     try:
         _, output = await run_windscribe_switch("list", timeout=10.0)
     except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="windscribe-switch list timed out")
+        raise HTTPException(status_code=504, detail="windscribe-switch list timed out") from None
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from None
 
     locations = []
     for line in output.splitlines():
@@ -1676,9 +1679,9 @@ async def get_windscribe_status():
     try:
         _, output = await run_windscribe_switch("status", timeout=10.0)
     except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="windscribe-switch status timed out")
+        raise HTTPException(status_code=504, detail="windscribe-switch status timed out") from None
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from None
 
     active_location = None
     interface_up = False
@@ -1709,9 +1712,9 @@ async def switch_windscribe_location(payload: WindscribeSwitchRequest):
         raise HTTPException(
             status_code=504,
             detail="Switch timed out — the tunnel may be in an unknown state. Check the server directly."
-        )
+        ) from None
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from None
 
     reverted = "Auto-reverting" in output or "Reverted." in output
     succeeded = returncode == 0 and "Handshake confirmed" in output and not reverted
@@ -1742,7 +1745,7 @@ async def control_service(payload: ServiceAction):
             await asyncio.create_subprocess_exec("sudo", "systemctl", payload.action, payload.service)
             return {"status": "success"}
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail=str(e)) from None
     raise HTTPException(status_code=404, detail="Service not found")
 
 @app.get("/api/processes")
@@ -1765,7 +1768,7 @@ async def control_process(payload: ProcessAction):
             await asyncio.create_subprocess_exec("sudo", "systemctl", "restart", target["service"])
             return {"status": "success", "action": "restart_service", "service": target["service"]}
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail=str(e)) from None
 
     if payload.action in ("terminate", "kill"):
         # Defense against PID reuse: process_cache can be up to
@@ -1776,7 +1779,7 @@ async def control_process(payload: ProcessAction):
         try:
             current_comm, _, _, _ = read_process_stat(payload.pid)
         except Exception:
-            raise HTTPException(status_code=404, detail="Process no longer exists")
+            raise HTTPException(status_code=404, detail="Process no longer exists") from None
         if current_comm != target["name"]:
             raise HTTPException(
                 status_code=409,
@@ -1787,7 +1790,7 @@ async def control_process(payload: ProcessAction):
             await asyncio.create_subprocess_exec("sudo", "kill", signal_flag, str(payload.pid))
             return {"status": "success", "action": payload.action, "pid": payload.pid}
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail=str(e)) from None
 
     raise HTTPException(status_code=400, detail="Unsupported action")
 
@@ -1931,10 +1934,8 @@ def _signal_media_group(sig: int, proc: Any = None):
     """The script runs in its own process group so ffmpeg/ffprobe/find stop with it."""
     proc = proc or _media_proc
     if proc is not None and proc.returncode is None:
-        try:
+        with contextlib.suppress(ProcessLookupError):
             os.killpg(proc.pid, sig)
-        except ProcessLookupError:
-            pass
 
 async def _force_kill_media_after(proc: Any, delay: float):
     await asyncio.sleep(delay)
@@ -1999,10 +2000,8 @@ async def _run_media_check(mode: str, recheck: bool):
                 # Give them a moment, then sweep the whole process group so nothing keeps
                 # reading the drive after Cancel. (Still safe: the group id is only ~1s stale.)
                 await asyncio.sleep(1)
-                try:
+                with contextlib.suppress(ProcessLookupError):
                     os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
             elif rc in (0, 1):
                 # Exit 1 = "problems found". Only trust it if the script really wrote a fresh report.
                 try:
@@ -2023,10 +2022,8 @@ async def _run_media_check(mode: str, recheck: bool):
         _media_proc = None
         state.update(status="idle", current="")
         if list_file:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(list_file)
-            except OSError:
-                pass
 
     if outcome in ("ok", "problems"):
         new_rows = await asyncio.to_thread(read_media_report)
@@ -2161,10 +2158,8 @@ async def get_pihole_telemetry():
 
         finally:
             if sid:
-                try:
+                with contextlib.suppress(Exception):
                     await client.delete(f"{PIHOLE_URL}/auth", headers={"X-FTL-SID": sid})
-                except Exception:
-                    pass
 
     return {
         "status": "offline",
@@ -2195,7 +2190,7 @@ async def control_pihole(payload: PiholeAction):
             if res.status_code == 200:
                 return {"status": "success"}
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Pi-hole communication drop: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Pi-hole communication drop: {str(e)}") from None
 
     raise HTTPException(status_code=400, detail="Instruction routing failed")
 
@@ -2209,10 +2204,7 @@ async def control_power(payload: PowerAction):
 
 @app.post("/api/control/jellyfin")
 async def control_jellyfin(payload: JellyfinCommand):
-    headers = {
-        "accept": "*/*",
-        "Authorization": f'MediaBrowser Token="{JELLYFIN_API_KEY}"'
-    }
+    headers = _jf_headers(accept_json=False)
     action = "PlayPause" if payload.command == "PlayPause" else "Stop"
     url = f"{JELLYFIN_URL}/Sessions/{payload.session_id}/Playing/{action}"
     
@@ -2235,6 +2227,11 @@ try:
     from androidtvremote2 import AndroidTVRemote, CannotConnect, ConnectionClosed, InvalidAuth
 except ImportError:                      # optional dependency
     AndroidTVRemote = None
+
+    # Stand-ins so the names below always exist, whether or not the library is installed.
+    class CannotConnect(Exception): pass
+    class ConnectionClosed(Exception): pass
+    class InvalidAuth(Exception): pass
 
 TV_IP = os.environ.get("TV_IP", "").strip()
 TV_CERT_DIR = os.path.expanduser(os.environ.get("TV_CERT_DIR", "~/.config/dashboard-tv"))
@@ -2316,8 +2313,11 @@ async def tv_connect_loop():
             except InvalidAuth:
                 tv_state["error"] = "Not paired - run: python tools/tv_remote_test.py pair"
                 await asyncio.sleep(30)          # picks it up on its own once you have paired
-            except (CannotConnect, ConnectionClosed):
-                tv_state["error"] = "TV unreachable (off or asleep?)"
+            except Exception as e:           # unreachable, or anything unexpected: report it and keep retrying
+                if not isinstance(e, (CannotConnect, ConnectionClosed)):
+                    print(f"[TV Remote Connect Exception]: {e}")
+                tv_state["error"] = ("TV unreachable (off or asleep?)" if isinstance(e, (CannotConnect, ConnectionClosed))
+                                     else f"{type(e).__name__}: {e}")
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 60)
 
@@ -2341,8 +2341,20 @@ async def _tv_ready():
         try:
             await asyncio.wait_for(_tv_available.wait(), timeout=3)
         except asyncio.TimeoutError:
-            raise HTTPException(status_code=503, detail="TV is not reachable right now")
+            raise HTTPException(status_code=503, detail="TV is not reachable right now") from None
     return tv_remote
+
+def _tv_send(action, *args) -> None:
+    """Calls one of the remote's send_* methods; a dropped connection becomes a 503 (the library reconnects)."""
+    try:
+        action(*args)
+    except ConnectionClosed:
+        raise HTTPException(status_code=503, detail="TV connection dropped - reconnecting") from None
+
+def _kill_quietly(proc: Any) -> None:
+    """Kills a subprocess that may already have exited."""
+    with contextlib.suppress(ProcessLookupError):
+        proc.kill()
 
 async def _run_adb(*args: str, timeout: float = 10.0) -> str:
     """Runs adb with an argument list (no shell) and returns stdout+stderr."""
@@ -2357,12 +2369,9 @@ async def _run_adb(*args: str, timeout: float = 10.0) -> str:
         # The client may already have exited while something it started still holds the pipe open,
         # in which case there is nothing left to kill.
         if proc.returncode is None:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
+            _kill_quietly(proc)
             await proc.wait()
-        raise RuntimeError(f"adb {args[0] if args else ''} timed out")
+        raise RuntimeError(f"adb {args[0] if args else ''} timed out") from None
     return out.decode(errors="replace")
 
 async def _ensure_adb_server() -> None:
@@ -2380,11 +2389,8 @@ async def _ensure_adb_server() -> None:
         await asyncio.wait_for(proc.wait(), timeout=15)
     except asyncio.TimeoutError:
         if proc.returncode is None:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-        raise RuntimeError("adb server did not start")
+            _kill_quietly(proc)
+        raise RuntimeError("adb server did not start") from None
 
 async def _adb_connect() -> str:
     """Connects to the TV (a no-op if already connected) and returns its adb serial."""
@@ -2398,14 +2404,17 @@ async def _adb_connect() -> str:
         raise RuntimeError(f"ADB could not connect: {out.strip()[:120] or 'no response'}")
     return serial
 
+async def _adb_shell(*shell_args: str) -> str:
+    """Runs one command on the TV through adb, serialized, connecting first if needed."""
+    async with _adb_lock:
+        serial = await _adb_connect()
+        return await _run_adb("-s", serial, "shell", *shell_args)
+
 async def _adb_launch(package: str) -> None:
     """Opens an installed app by package name. Raises RuntimeError with a readable reason."""
     if not _PACKAGE_RE.match(package):
         raise RuntimeError("invalid package name")
-    async with _adb_lock:
-        serial = await _adb_connect()
-        out = await _run_adb("-s", serial, "shell", "monkey", "-p", package,
-                             "-c", "android.intent.category.LAUNCHER", "1")
+    out = await _adb_shell("monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1")
     if "No activities found" in out or "monkey aborted" in out:
         raise RuntimeError("That app is not installed on the TV")
     if "Events injected: 1" not in out:
@@ -2418,10 +2427,8 @@ async def _adb_open_link(uri: str) -> None:
     """Hands a wholphin:// link to the TV (this opens the item's details page)."""
     if not _WHOLPHIN_LINK_RE.fullmatch(uri):
         raise RuntimeError("invalid link")
-    async with _adb_lock:
-        serial = await _adb_connect()
-        # adb joins the arguments and the TV's own shell parses them, so '&' needs the single quotes.
-        out = await _run_adb("-s", serial, "shell", f"am start -a android.intent.action.VIEW -d '{uri}'")
+    # adb joins the arguments and the TV's own shell parses them, so '&' needs the single quotes.
+    out = await _adb_shell(f"am start -a android.intent.action.VIEW -d '{uri}'")
     if "Error" in out or "unable to resolve" in out.lower():
         raise RuntimeError("The TV app didn't accept the link - is Wholphin installed, and recent enough to support links?")
     if "Starting: Intent" not in out:    # "intent delivered to currently running instance" warnings are fine
@@ -2445,10 +2452,7 @@ async def tv_send_key(payload: TvKeyRequest):
     if key not in TV_KEYS:
         raise HTTPException(status_code=400, detail="Unsupported key")
     remote = await _tv_ready()
-    try:
-        remote.send_key_command(key, "SHORT")
-    except ConnectionClosed:
-        raise HTTPException(status_code=503, detail="TV connection dropped - reconnecting")
+    _tv_send(remote.send_key_command, key, "SHORT")
     return {"status": "sent", "key": key}
 
 @app.post("/api/tv/app")
@@ -2464,15 +2468,14 @@ async def tv_launch_app(payload: TvAppRequest):
         except RuntimeError as e:
             adb_error = str(e)
             if not entry.get("link"):
-                raise HTTPException(status_code=502, detail=adb_error)
+                raise HTTPException(status_code=502, detail=adb_error) from None
     # Fallback: ask the TV to open a deep link. The TV answers asynchronously, so a rejection
     # can't be detected here - the response says "requested", not "launched".
-    link = entry.get("link") or entry["package"]
+    link = entry.get("link")
+    if not link:     # a bare package name is not a link: TVs reject it or open the wrong app
+        raise HTTPException(status_code=503, detail=f"Launching {entry['label']} needs ADB: install adb and authorize this machine (see the README)")
     remote = await _tv_ready()
-    try:
-        remote.send_launch_app_command(link)
-    except ConnectionClosed:
-        raise HTTPException(status_code=503, detail="TV connection dropped - reconnecting")
+    _tv_send(remote.send_launch_app_command, link)
     return {"status": "requested", "app": payload.app, "method": "link", "adb_error": adb_error}
 
 # --- Open on TV: browse Jellyfin here, open the title's page in Wholphin on the TV ---
@@ -2489,21 +2492,18 @@ _CAST_TYPES = ("Movie", "Episode")
 class TvOpenRequest(BaseModel):
     item_id: str
 
-def _jf_headers() -> Dict[str, str]:
-    return {"Authorization": f'MediaBrowser Token="{JELLYFIN_API_KEY}"', "Accept": "application/json"}
-
 async def _jf_get(path: str, params: Any = None, timeout: float = 6.0) -> Any:
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             res = await client.get(f"{JELLYFIN_URL}{path}", params=params, headers=_jf_headers())
     except httpx.HTTPError:
-        raise HTTPException(status_code=502, detail="Jellyfin unreachable")
+        raise HTTPException(status_code=502, detail="Jellyfin unreachable") from None
     if res.status_code != 200:
         raise HTTPException(status_code=502, detail=f"Jellyfin returned HTTP {res.status_code}")
     try:
         return res.json()
     except ValueError:
-        raise HTTPException(status_code=502, detail="Jellyfin returned something that isn't JSON - check JELLYFIN_URL")
+        raise HTTPException(status_code=502, detail="Jellyfin returned something that isn't JSON - check JELLYFIN_URL") from None
 
 def _jf_item_summary(item: Dict[str, Any]) -> Dict[str, Any]:
     kind = item.get("Type")
@@ -2586,12 +2586,12 @@ async def tv_open(payload: TvOpenRequest):
     except HTTPException:
         raise
     except RuntimeError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail=str(e)) from None
     except Exception as e:
         # Anything unexpected: keep the traceback in the journal and show the cause in the widget,
         # instead of a bare "Error 500".
         traceback.print_exc()
-        raise HTTPException(status_code=502, detail=f"Unexpected error: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=502, detail=f"Unexpected error: {type(e).__name__}: {e}") from None
     print(f"[Open on TV] {item.get('Name')!r}")
     return {"status": "opened", "name": item.get("Name")}
 
