@@ -2252,9 +2252,25 @@ TV_KEYS = frozenset({
 # for unknown ones, so a link is only worth setting for apps known to handle it.
 TV_APPS: Dict[str, Dict[str, str]] = {
     "wholphin": {"label": "Wholphin", "package": "com.github.damontecres.wholphin"},
-    "youtube": {"label": "YouTube", "package": "com.google.android.youtube.tv", "link": "https://www.youtube.com"},
-    "netflix": {"label": "Netflix", "package": "com.netflix.ninja", "link": "https://www.netflix.com/title"},
+    "youtubetv": {"label": "YouTube TV", "package": "com.google.android.youtube.tvunplugged"},
+    "appletv": {"label": "Apple TV", "package": "com.apple.atve.androidtv.appletv"},
 }
+# Button logos are image files you supply: static/tv-icons/<app id>.svg (or .png / .webp / .jpg),
+# e.g. static/tv-icons/appletv.svg. An app with no file just shows its name. The files are not
+# bundled because they are the apps' own trademarked artwork; take them from each app's brand page.
+TV_ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "tv-icons")
+_TV_ICON_TYPES = {".svg": "image/svg+xml", ".png": "image/png", ".webp": "image/webp", ".jpg": "image/jpeg"}
+
+def _tv_icon_path(app_id: str) -> Any:
+    """Path of the logo file for a known app id, or None. The id must be a TV_APPS key, so no
+    request value ever becomes part of a file path."""
+    if app_id not in TV_APPS:
+        return None
+    for ext in _TV_ICON_TYPES:
+        path = os.path.join(TV_ICON_DIR, app_id + ext)
+        if os.path.isfile(path):
+            return path
+    return None
 _PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
 
 # ADB over the network (TV: Developer options -> USB/network debugging; Pi: `apt install adb`,
@@ -2443,8 +2459,17 @@ async def get_tv_status():
         "current_app": tv_state["current_app"],
         "error": tv_state["error"],
         "adb": bool(ADB_BIN),
-        "apps": [{"id": app_id, "label": a["label"]} for app_id, a in TV_APPS.items()],
+        "apps": [{"id": app_id, "label": a["label"], "icon": _tv_icon_path(app_id) is not None}
+                 for app_id, a in TV_APPS.items()],
     }
+
+@app.get("/api/tv/icon/{app_id}")
+async def tv_app_icon(app_id: str):
+    path = _tv_icon_path(app_id)
+    if not path:
+        raise HTTPException(status_code=404, detail="No logo for this app")
+    return FileResponse(path, media_type=_TV_ICON_TYPES[os.path.splitext(path)[1]],
+                        headers={"Cache-Control": "private, max-age=3600"})
 
 @app.post("/api/tv/key")
 async def tv_send_key(payload: TvKeyRequest):

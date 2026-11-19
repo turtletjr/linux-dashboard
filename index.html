@@ -51,6 +51,7 @@
       .tv-btn:active { transform: scale(0.95); background-color: rgba(16, 185, 129, 0.2); border-color: rgb(16, 185, 129); }
       .tv-btn.hidden { display: none; }   /* .tv-btn's display:flex would otherwise beat Tailwind's hidden */
       .tv-btn svg { width: 1.1rem; height: 1.1rem; pointer-events: none; }
+      .tv-btn img { height: 1.1rem; width: auto; max-width: 1.6rem; object-fit: contain; pointer-events: none; }
       .tv-btn-ok { background-color: rgba(16, 185, 129, 0.12); border-color: rgba(16, 185, 129, 0.4); color: rgb(110, 231, 183); }
       .tv-btn-power { color: rgb(251, 113, 133); }
       .tv-btn-power:hover { background-color: rgba(225, 29, 72, 0.2); border-color: rgb(244, 63, 94); }
@@ -1645,7 +1646,7 @@ async function updatePiholeData() {
                 if (appsKey !== tvAppsKey) {   // only rebuild the launcher when the list changes
                     tvAppsKey = appsKey;
                     document.getElementById('tv-apps').innerHTML = (d.apps || []).map(a =>
-                        `<button type="button" class="tv-btn px-3" data-tv-app="${escapeHtml(a.id)}">${escapeHtml(a.label)}</button>`
+                        `<button type="button" class="tv-btn px-3" data-tv-app="${escapeHtml(a.id)}">${a.icon ? `<img alt="" src="/api/tv/icon/${encodeURIComponent(a.id)}">` : ''}${escapeHtml(a.label)}</button>`
                     ).join('');
                 }
             } catch (e) {
