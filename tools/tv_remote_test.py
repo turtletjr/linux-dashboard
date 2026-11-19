@@ -10,7 +10,7 @@ Run this on the server (it needs to reach the TV), not from your laptop:
     python tools/tv_remote_test.py key DPAD_UP
     python tools/tv_remote_test.py key VOLUME_UP VOLUME_UP VOLUME_DOWN VOLUME_DOWN
     python tools/tv_remote_test.py --debug status     # log every protocol message
-    python tools/tv_remote_test.py launch jellyfin
+    python tools/tv_remote_test.py launch youtube
 
 TV address comes from --host or the TV_IP environment variable.
 The pairing certificate is stored outside the repo (default ~/.config/dashboard-tv)
@@ -30,8 +30,9 @@ KEY_FILE = os.path.join(CERT_DIR, "key.pem")
 
 # Friendly names -> deep links. Package IDs can vary by TV; `status` shows the
 # package currently in the foreground, which is the easiest way to find one.
+# Some TVs (the TCL this was built on) reject market:// and package links, so apps
+# without a working link (e.g. Wholphin) are launched by the dashboard over ADB instead.
 APPS = {
-    "jellyfin": "market://launch?id=org.jellyfin.androidtv",
     "youtube": "https://www.youtube.com",
     "netflix": "https://www.netflix.com/title",
 }
@@ -81,8 +82,8 @@ async def main() -> None:
     sub.add_parser("status")
     k = sub.add_parser("key")
     k.add_argument("names", nargs="+", help="one or more of HOME, BACK, DPAD_UP, DPAD_CENTER, VOLUME_UP, MUTE, MEDIA_PLAY_PAUSE ...")
-    l = sub.add_parser("launch")
-    l.add_argument("app", help=f"one of {', '.join(APPS)} or a full deep link")
+    launch = sub.add_parser("launch")
+    launch.add_argument("app", help=f"one of {', '.join(APPS)} or a full deep link")
     args = ap.parse_args()
     if not args.host:
         sys.exit("No TV address: pass --host or set TV_IP")

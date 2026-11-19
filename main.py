@@ -9,7 +9,7 @@ import tempfile
 import time
 import traceback
 from typing import Dict, Any, List, Literal
-from fastapi import FastAPI, HTTPException, BackgroundTasks, APIRouter, Depends
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
@@ -59,7 +59,6 @@ def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)) ->
     return credentials.username
 
 app = FastAPI(title="GreenPlanet Server Engine", dependencies=[Depends(verify_credentials)])
-router = APIRouter()
 
 # No CORS middleware: the frontend is served by this same app (same origin),
 # so cross-origin access isn't needed. This matters more than usual here
@@ -2482,7 +2481,7 @@ async def tv_launch_app(payload: TvAppRequest):
 # page; pressing Play is left to the remote. TV_JELLYFIN_CLIENT is matched against each Jellyfin
 # session's client / device name (case-insensitive) to find the TV's Jellyfin user; set
 # TV_JELLYFIN_USER_ID to skip that lookup.
-TV_JELLYFIN_CLIENT = os.environ.get("TV_JELLYFIN_CLIENT", "Wholphin").strip().lower()
+TV_JELLYFIN_CLIENT = (os.environ.get("TV_JELLYFIN_CLIENT", "").strip() or "Wholphin").lower()   # blank must not match every session
 TV_JELLYFIN_USER_ID = os.environ.get("TV_JELLYFIN_USER_ID", "").strip()
 _JF_GUID_RE = re.compile(r"[0-9a-fA-F]{32}|[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 _CAST_TYPES = ("Movie", "Episode")
