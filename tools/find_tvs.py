@@ -4,13 +4,13 @@ over Tailscale.
 
 Run this on the server (it has to be able to reach the TVs):
 
-    python tools/find_tvs.py                          # this machine's /24 + your tailnet
+    python tools/find_tvs.py                          # this machine's LAN(s) + your tailnet
     python tools/find_tvs.py --subnet 192.168.1.0/24  # name the LAN(s) yourself (repeatable)
     python tools/find_tvs.py --no-tailscale           # LAN only
     python tools/find_tvs.py --json                   # machine-readable
 
 Networks searched:
-  * LAN: every address of this machine's /24 (or each --subnet) is tried on port 6466,
+  * LAN: every address of this machine's LAN (or each --subnet; a VPN tunnel is never mistaken for it) is tried on port 6466,
     the Android TV Remote protocol port. TVs on the LAN are also looked for by mDNS
     ("_androidtvremote2._tcp") if `pip install zeroconf` is done.
   * Tailscale (uses `tailscale status --json`; skipped if tailscale isn't available): the
@@ -31,7 +31,7 @@ import contextlib
 import ipaddress
 import json
 import os
-import socket
+import subprocess
 import sys
 
 REMOTE_PORT = 6466
@@ -43,15 +43,35 @@ MAX_SUBNET = 1024            # addresses per scanned subnet (a /22)
 REMOTE_MIN_TIMEOUT = 1.5     # Tailscale paths can be relayed, so they get more time
 
 
-def local_subnet() -> str:
-    """The /24 around this machine's LAN address (the one used to reach the internet)."""
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-        try:
-            s.connect(("192.0.2.1", 9))      # UDP "connect" sends nothing; it only picks a route
-            ip = s.getsockname()[0]
-        except OSError:
-            sys.exit("Could not work out this machine's LAN address - pass --subnet")
-    return str(ipaddress.ip_network(f"{ip}/24", strict=False))
+PRIVATE_RANGES = [ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")]
+VIRTUAL_IFACE_PREFIXES = ("lo", "docker", "veth", "br-", "virbr", "tailscale", "wg", "tun", "tap",
+                          "zt", "ppp", "ifb", "windscribe")
+
+
+def local_subnets() -> list:
+    """The LAN(s) this machine is on: private (10/172.16/192.168) addresses on real interfaces.
+
+    The route to the internet is deliberately not used: with a VPN up it points at the tunnel,
+    not at your LAN. Tunnel interfaces and Tailscale/CGNAT addresses (100.64/10) are ignored."""
+    try:
+        out = subprocess.run(["ip", "-4", "-o", "addr", "show", "scope", "global"],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        out = ""
+    nets = []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 4 or parts[2] != "inet" or parts[1].startswith(VIRTUAL_IFACE_PREFIXES):
+            continue
+        iface = ipaddress.ip_interface(parts[3])
+        if not any(iface.ip in r for r in PRIVATE_RANGES):
+            continue
+        net = iface.network if iface.network.prefixlen >= 22 else ipaddress.ip_network(f"{iface.ip}/24", strict=False)
+        if net not in nets:
+            nets.append(net)
+    if not nets:
+        sys.exit("Could not find this machine's LAN address - pass --subnet")
+    return [str(n) for n in nets]
 
 
 def check_subnet(text: str) -> ipaddress.IPv4Network:
@@ -191,7 +211,7 @@ async def describe(ip: str, name, label: str, check_pairing: bool, base_timeout:
 async def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--subnet", action="append", metavar="CIDR",
-                    help="LAN to scan, e.g. 192.168.1.0/24; repeat for more (default: this machine's /24)")
+                    help="LAN to scan, e.g. 192.168.1.0/24; repeat for more (default: the LAN(s) this machine is on)")
     ap.add_argument("--no-tailscale", action="store_true", help="don't look at the tailnet")
     ap.add_argument("--timeout", type=float, default=0.6,
                     help="seconds to wait per LAN address (default 0.6; Tailscale gets at least 1.5)")
@@ -202,7 +222,7 @@ async def main() -> None:
     args = ap.parse_args()
 
     notes: list = []
-    lan_nets = [check_subnet(c) for c in (args.subnet or [local_subnet()])]
+    lan_nets = [check_subnet(c) for c in (args.subnet or local_subnets())]
     targets: dict = {}                       # ip -> label; the first label given to an address wins
     for net in lan_nets:
         for ip in hosts_of(net):
