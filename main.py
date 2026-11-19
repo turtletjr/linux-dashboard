@@ -2430,7 +2430,10 @@ async def _adb_launch(package: str) -> None:
     """Opens an installed app by package name. Raises RuntimeError with a readable reason."""
     if not _PACKAGE_RE.match(package):
         raise RuntimeError("invalid package name")
-    out = await _adb_shell("monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1")
+    # TV-only apps (YouTube TV, for one) may register only as LEANBACK_LAUNCHER, which a plain
+    # LAUNCHER lookup doesn't find, so ask for both.
+    out = await _adb_shell("monkey", "-p", package, "-c", "android.intent.category.LAUNCHER",
+                           "-c", "android.intent.category.LEANBACK_LAUNCHER", "1")
     if "No activities found" in out or "monkey aborted" in out:
         raise RuntimeError("That app is not installed on the TV")
     if "Events injected: 1" not in out:
