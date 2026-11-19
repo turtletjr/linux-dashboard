@@ -1,24 +1,29 @@
 #!/usr/bin/env python3
-"""Finds Google TV / Android TV devices on the LAN that the dashboard could control.
+"""Finds Google TV / Android TV devices that the dashboard could control, on your LAN and
+over Tailscale.
 
-Run this on the server (it has to be on the same network as the TVs):
+Run this on the server (it has to be able to reach the TVs):
 
-    python tools/find_tvs.py                       # scan this machine's /24
-    python tools/find_tvs.py --subnet 192.168.1.0/24
-    python tools/find_tvs.py --json                # machine-readable
+    python tools/find_tvs.py                          # this machine's /24 + your tailnet
+    python tools/find_tvs.py --subnet 192.168.1.0/24  # name the LAN(s) yourself (repeatable)
+    python tools/find_tvs.py --no-tailscale           # LAN only
+    python tools/find_tvs.py --json                   # machine-readable
 
-Two methods are combined, and a TV found by either is listed:
-  * mDNS: Android TVs announce "_androidtvremote2._tcp" while they are on. Needs
-    `pip install zeroconf`; skipped (with a note) if it is not installed.
-  * Port scan: every address in the subnet is tried on port 6466, the Android TV
-    Remote protocol port. Needs nothing extra.
+Networks searched:
+  * LAN: every address of this machine's /24 (or each --subnet) is tried on port 6466,
+    the Android TV Remote protocol port. TVs on the LAN are also looked for by mDNS
+    ("_androidtvremote2._tcp") if `pip install zeroconf` is done.
+  * Tailscale (uses `tailscale status --json`; skipped if tailscale isn't available): the
+    tailnet itself is far too big to scan, so only what it names is tried - each online
+    peer's own Tailscale address (a TV running the Tailscale app), and the subnets that
+    peers advertise as routes (a TV on a remote LAN behind a subnet router).
 
-For each TV it also reports whether the ADB port (5555) is open, and - if
-androidtvremote2 is installed and a pairing certificate exists - whether this
+For each TV it reports the network it was found on, whether the ADB port (5555) is open,
+and - if androidtvremote2 is installed and a pairing certificate exists - whether this
 machine is already paired with it, plus the model the TV reports.
 
-It only reads. It never pairs and never sends a key. To use a TV, set TV_IP in .env
-to its address and pair with `python tools/tv_remote_test.py pair`.
+It only reads. It never pairs and never sends a key. To use a TV, set TV_IP in .env to
+its address and pair with `python tools/tv_remote_test.py pair`.
 """
 import argparse
 import asyncio
@@ -33,6 +38,9 @@ REMOTE_PORT = 6466
 ADB_PORT = 5555
 MDNS_TYPE = "_androidtvremote2._tcp.local."
 CERT_DIR = os.path.expanduser(os.environ.get("TV_CERT_DIR", "~/.config/dashboard-tv"))
+TAILNET = ipaddress.ip_network("100.64.0.0/10")
+MAX_SUBNET = 1024            # addresses per scanned subnet (a /22)
+REMOTE_MIN_TIMEOUT = 1.5     # Tailscale paths can be relayed, so they get more time
 
 
 def local_subnet() -> str:
@@ -46,6 +54,54 @@ def local_subnet() -> str:
     return str(ipaddress.ip_network(f"{ip}/24", strict=False))
 
 
+def check_subnet(text: str) -> ipaddress.IPv4Network:
+    try:
+        net = ipaddress.ip_network(text, strict=False)
+    except ValueError as e:
+        sys.exit(f"Bad --subnet: {e}")
+    if net.version != 4 or net.num_addresses > MAX_SUBNET:
+        sys.exit(f"{text}: pass an IPv4 subnet of /22 or smaller")
+    return net
+
+
+def hosts_of(net: ipaddress.IPv4Network) -> list:
+    return [str(h) for h in (net.hosts() if net.num_addresses > 2 else net)]
+
+
+async def tailscale_targets(notes: list) -> tuple:
+    """(peer addresses, routed subnets) from `tailscale status --json`, each as (target, label)."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "tailscale", "status", "--json",
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        out, _ = await asyncio.wait_for(proc.communicate(), 8)
+        status = json.loads(out)
+    except FileNotFoundError:
+        notes.append("Tailscale skipped: the tailscale command isn't installed")
+        return [], []
+    except (asyncio.TimeoutError, ValueError, OSError):
+        notes.append("Tailscale skipped: couldn't read `tailscale status --json` (is tailscaled running?)")
+        return [], []
+
+    peers, routes = [], []
+    for peer in (status.get("Peer") or {}).values():
+        if not peer.get("Online"):
+            continue
+        host = peer.get("HostName") or peer.get("DNSName") or "peer"
+        for ip in peer.get("TailscaleIPs") or []:
+            if ":" not in ip:
+                peers.append((ip, f"tailscale: {host}"))
+        for route in peer.get("PrimaryRoutes") or []:
+            net = ipaddress.ip_network(route, strict=False)
+            if net.version != 4 or net.prefixlen == 0 or net.subnet_of(TAILNET):
+                continue                                    # exit-node default routes, IPv6, tailnet itself
+            if net.num_addresses > MAX_SUBNET:
+                notes.append(f"Tailscale route {route} (via {host}) is too large to scan; use --subnet with a smaller part of it")
+                continue
+            routes.append((net, f"tailscale route {route} via {host}"))
+    return peers, routes
+
+
 async def port_open(ip: str, port: int, timeout: float) -> bool:
     try:
         _, writer = await asyncio.wait_for(asyncio.open_connection(ip, port), timeout)
@@ -57,17 +113,22 @@ async def port_open(ip: str, port: int, timeout: float) -> bool:
     return True
 
 
-async def scan(hosts, port: int, timeout: float, concurrency: int = 128) -> list:
+async def scan(targets: dict, port: int, base_timeout: float, concurrency: int = 128) -> list:
+    """targets: ip -> label. LAN addresses use base_timeout, Tailscale ones get at least 1.5s."""
     sem = asyncio.Semaphore(concurrency)
 
     async def probe(ip: str):
         async with sem:
-            return ip if await port_open(ip, port, timeout) else None
+            return ip if await port_open(ip, port, timeout_for(targets[ip], base_timeout)) else None
 
-    return [ip for ip in await asyncio.gather(*(probe(str(h)) for h in hosts)) if ip]
+    return [ip for ip in await asyncio.gather(*(probe(ip) for ip in targets)) if ip]
 
 
-async def mdns(seconds: float) -> dict:
+def timeout_for(label: str, base: float) -> float:
+    return base if label.startswith("lan") else max(base, REMOTE_MIN_TIMEOUT)
+
+
+async def mdns(seconds: float):
     """ip -> advertised name, or None if zeroconf is not installed."""
     try:
         from zeroconf import ServiceStateChange
@@ -119,8 +180,9 @@ async def pairing_info(ip: str) -> dict:
         remote.disconnect()
 
 
-async def describe(ip: str, name, check_pairing: bool, timeout: float) -> dict:
-    tv = {"ip": ip, "name": name, "adb": await port_open(ip, ADB_PORT, timeout)}
+async def describe(ip: str, name, label: str, check_pairing: bool, base_timeout: float) -> dict:
+    tv = {"ip": ip, "name": name, "network": label,
+          "adb": await port_open(ip, ADB_PORT, timeout_for(label, base_timeout))}
     if check_pairing:
         tv.update(await pairing_info(ip))
     return tv
@@ -128,54 +190,76 @@ async def describe(ip: str, name, check_pairing: bool, timeout: float) -> dict:
 
 async def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--subnet", help="network to scan, e.g. 192.168.1.0/24 (default: this machine's /24)")
-    ap.add_argument("--timeout", type=float, default=0.6, help="seconds to wait per address (default 0.6)")
+    ap.add_argument("--subnet", action="append", metavar="CIDR",
+                    help="LAN to scan, e.g. 192.168.1.0/24; repeat for more (default: this machine's /24)")
+    ap.add_argument("--no-tailscale", action="store_true", help="don't look at the tailnet")
+    ap.add_argument("--timeout", type=float, default=0.6,
+                    help="seconds to wait per LAN address (default 0.6; Tailscale gets at least 1.5)")
     ap.add_argument("--no-mdns", action="store_true", help="skip the mDNS lookup")
     ap.add_argument("--no-pairing-check", action="store_true", help="don't connect to see if you are paired")
     ap.add_argument("--port", type=int, default=REMOTE_PORT, help=argparse.SUPPRESS)   # for testing
     ap.add_argument("--json", action="store_true", help="print JSON instead of a table")
     args = ap.parse_args()
 
-    try:
-        net = ipaddress.ip_network(args.subnet or local_subnet(), strict=False)
-    except ValueError as e:
-        sys.exit(f"Bad --subnet: {e}")
-    if net.version != 4 or net.num_addresses > 1024:
-        sys.exit("Pass an IPv4 subnet of /22 or smaller")
+    notes: list = []
+    lan_nets = [check_subnet(c) for c in (args.subnet or [local_subnet()])]
+    targets: dict = {}                       # ip -> label; the first label given to an address wins
+    for net in lan_nets:
+        for ip in hosts_of(net):
+            targets.setdefault(ip, f"lan {net}")
+    searched = [str(n) for n in lan_nets]
 
-    notes = []
+    if not args.no_tailscale:
+        peers, routes = await tailscale_targets(notes)
+        for ip, label in peers:
+            targets.setdefault(ip, label)
+        for net, label in routes:
+            if any(net.overlaps(n) for n in lan_nets):
+                continue                     # already covered as a LAN
+            for ip in hosts_of(net):
+                targets.setdefault(ip, label)
+            searched.append(f"{net} (tailscale)")
+        if peers:
+            searched.append(f"{len(peers)} tailscale peer(s)")
+
     log = (lambda m: None) if args.json else (lambda m: print(m, file=sys.stderr))
-    log(f"Scanning {net} for port {args.port}" + ("" if args.no_mdns else " and listening for mDNS") + " ...")
+    log(f"Checking {len(targets)} addresses for port {args.port}: {', '.join(searched)}"
+        + ("" if args.no_mdns else " (+ mDNS on the LAN)") + " ...")
 
     names: dict = {}
     mdns_task = None if args.no_mdns else asyncio.create_task(mdns(4.0))
-    ips = set(await scan(net.hosts() if net.num_addresses > 1 else [net.network_address], args.port, args.timeout))
+    ips = set(await scan(targets, args.port, args.timeout))
     if mdns_task:
         names = await mdns_task
         if names is None:
             names = {}
-            notes.append("mDNS skipped: pip install zeroconf to also find TVs by their announcement")
+            notes.append("mDNS skipped: pip install zeroconf to also find LAN TVs by their announcement")
         else:
-            ips |= {ip for ip in names if ipaddress.ip_address(ip) in net}
+            for ip in names:
+                if any(ipaddress.ip_address(ip) in n for n in lan_nets):
+                    ips.add(ip)
+                    targets.setdefault(ip, f"lan {lan_nets[0]}")
 
     tvs = sorted(await asyncio.gather(*(
-        describe(ip, names.get(ip), not args.no_pairing_check, args.timeout) for ip in ips
+        describe(ip, names.get(ip), targets[ip], not args.no_pairing_check, args.timeout) for ip in ips
     )), key=lambda t: ipaddress.ip_address(t["ip"]))
 
     if args.json:
-        print(json.dumps({"subnet": str(net), "tvs": tvs, "notes": notes}, indent=2))
+        print(json.dumps({"searched": searched, "tvs": tvs, "notes": notes}, indent=2))
         return
     for n in notes:
         print(f"Note: {n}", file=sys.stderr)
     if not tvs:
-        print("No TVs found. Check the TV is on (not just standby), on the same network, "
-              "and try --subnet if the guessed network is wrong.")
+        print("No TVs found. Check the TV is on (not just standby) and reachable from this machine, "
+              "and use --subnet if the guessed LAN is wrong.")
         return
-    print(f"{'ADDRESS':<16} {'NAME':<24} {'ADB':<5} PAIRED")
+    print(f"{'ADDRESS':<16} {'NAME':<20} {'ADB':<5} {'PAIRED':<7} NETWORK")
     for t in tvs:
         paired = {True: "yes", False: "no", None: "?"}[t.get("paired")]
-        extra = t.get("model") or t.get("note") or ""
-        print(f"{t['ip']:<16} {(t['name'] or '-'):<24} {'open' if t['adb'] else '-':<5} {paired}  {extra}")
+        print(f"{t['ip']:<16} {(t['name'] or '-'):<20} {'open' if t['adb'] else '-':<5} {paired:<7} {t['network']}")
+        extra = t.get("model") or t.get("note")
+        if extra:
+            print(f"{'':<16} {extra}")
     print("\nTo use one: set TV_IP=<address> in .env, then pair with `python tools/tv_remote_test.py pair`.")
 
 
