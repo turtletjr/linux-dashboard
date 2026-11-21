@@ -12,7 +12,7 @@ Run this on the server (it needs to reach the TV), not from your laptop:
     python tools/tv_remote_test.py --debug status     # log every protocol message
     python tools/tv_remote_test.py launch youtube
 
-TV address comes from --host or the TV_IP environment variable.
+TV address comes from --host or the TV_IP environment variable. (The dashboard itself pairs TVs from its TV Remote widget; this tool is for doing it from a terminal.)
 The pairing certificate is stored outside the repo (default ~/.config/dashboard-tv)
 so it can never be committed. Override with TV_CERT_DIR.
 """

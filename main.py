@@ -9,7 +9,7 @@ import signal
 import tempfile
 import time
 import traceback
-from typing import Dict, Any, List, Literal
+from typing import Dict, Any, List, Literal, Optional
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import FileResponse, Response
@@ -1410,7 +1410,7 @@ async def startup_event():
     asyncio.create_task(update_pihole_versions_loop())
     asyncio.create_task(update_service_telemetry_loop())
     asyncio.create_task(update_external_requests_map_loop())
-    asyncio.create_task(tv_connect_loop())
+    _tv_start_all()
 
 # --- ENDPOINTS ---
 
@@ -2217,12 +2217,14 @@ async def control_jellyfin(payload: JellyfinCommand):
     raise HTTPException(status_code=400, detail="Command failed")
 
 # --- TV remote (Google TV / Android TV) ---
-# Talks the Android TV Remote protocol v2 (port 6466, TLS) through the
-# `androidtvremote2` library. Pair once with `python tools/tv_remote_test.py pair`
-# as the same user this app runs as; the certificate lives in TV_CERT_DIR, outside
-# the repo. One long-lived connection is kept open (the library reconnects it by
+# Talks the Android TV Remote protocol v2 (port 6466, TLS) through the `androidtvremote2`
+# library, to any number of TVs. The TV list is saved in TV_CERT_DIR/tvs.json (outside the
+# repo) and managed from the widget: Find TVs (searches the LAN and Tailscale), add by address,
+# pair with the code the TV shows, rename, remove. One pairing certificate in TV_CERT_DIR
+# serves every TV. Each TV gets one long-lived connection (the library reconnects it by
 # itself), so a button press is just a small message, not a new TLS handshake.
-# Leave TV_IP blank to switch the feature off.
+# TV_IP in .env is only used once: with no saved list yet, it becomes the first TV.
+import tv_discovery   # the LAN + Tailscale search, shared with tools/find_tvs.py
 try:
     from androidtvremote2 import AndroidTVRemote, CannotConnect, ConnectionClosed, InvalidAuth
 except ImportError:                      # optional dependency
@@ -2236,6 +2238,8 @@ except ImportError:                      # optional dependency
 TV_IP = os.environ.get("TV_IP", "").strip()
 TV_CERT_DIR = os.path.expanduser(os.environ.get("TV_CERT_DIR", "~/.config/dashboard-tv"))
 TV_CLIENT_NAME = "GreenPlanet Dashboard"
+TV_STORE = os.path.join(TV_CERT_DIR, "tvs.json")
+TV_MAX = 12
 # Only these key names can be sent. The API never forwards arbitrary strings to the TV.
 TV_KEYS = frozenset({
     "HOME", "BACK", "MENU", "POWER",
@@ -2280,46 +2284,146 @@ TV_ADB_PORT = os.environ.get("TV_ADB_PORT", "5555").strip() or "5555"
 ADB_BIN = shutil.which("adb") if os.environ.get("TV_ADB", "1").strip() != "0" else None
 _adb_lock = asyncio.Lock()
 
-tv_remote: Any = None
-tv_state: Dict[str, Any] = {
-    "configured": bool(TV_IP) and AndroidTVRemote is not None,
-    "available": False,      # connected right now
-    "is_on": None,
-    "current_app": "",
-    "error": "",
-}
-_tv_available = asyncio.Event()
+class TvDevice:
+    """One TV: its saved settings plus its live connection state."""
+    def __init__(self, tv_id: str, name: str, ip: str, jellyfin_user_id: str = ""):
+        self.id, self.name, self.ip, self.jellyfin_user_id = tv_id, name, ip, jellyfin_user_id
+        self.remote: Any = None             # the connected AndroidTVRemote
+        self.pairing: Any = None            # an AndroidTVRemote waiting for the code shown on the TV
+        self.task: Any = None               # the connect loop
+        self.available = asyncio.Event()    # connected right now
+        self.state: Dict[str, Any] = {"is_on": None, "current_app": "", "error": "", "needs_pairing": False}
+
+tvs: Dict[str, TvDevice] = {}
+_tv_cert_lock = asyncio.Lock()
+_tv_discover_lock = asyncio.Lock()
+_TV_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
+_TV_CODE_RE = re.compile(r"^[0-9A-Fa-f]{6}$")
 
 class TvKeyRequest(BaseModel):
+    tv: str = ""
     key: str
 
 class TvAppRequest(BaseModel):
+    tv: str = ""
     app: str
 
-def _tv_set_available(value: bool):
-    tv_state["available"] = bool(value)
-    if value:
-        _tv_available.set()
-    else:
-        _tv_available.clear()
+class TvAddRequest(BaseModel):
+    name: str = ""
+    ip: str
 
-async def tv_connect_loop():
-    """Connects to the TV in the background and keeps the connection alive. A TV that is
-    off or not yet paired just means retrying later; it never blocks the dashboard."""
-    global tv_remote
-    if not tv_state["configured"]:
-        if TV_IP and AndroidTVRemote is None:
-            print("[TV Remote] TV_IP is set but androidtvremote2 is not installed (pip install -r requirements.txt).")
-        return
+class TvEditRequest(BaseModel):
+    name: Optional[str] = None
+    jellyfin_user_id: Optional[str] = None
+
+class TvPairRequest(BaseModel):
+    code: str
+
+def _tv_clean_name(text: str) -> str:
+    return "".join(ch for ch in text if ch.isprintable()).strip()[:40]
+
+def _tv_clean_ip(text: str) -> str:
+    """The TV's IPv4 address, or a 400. Addresses that can never be a TV are refused."""
     try:
+        ip = ipaddress.ip_address(text.strip())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="That isn't an IP address") from None
+    if ip.version != 4 or ip.is_loopback or ip.is_unspecified or ip.is_multicast or ip.is_link_local or ip.is_reserved:
+        raise HTTPException(status_code=400, detail="Use the TV's IPv4 address on your LAN or Tailscale")
+    return str(ip)
+
+def _tv_new_id(name: str) -> str:
+    base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:24] or "tv"
+    tv_id, n = base, 2
+    while tv_id in tvs:
+        tv_id, n = f"{base}-{n}", n + 1
+    return tv_id
+
+def _tv_get(tv_id: str = "") -> TvDevice:
+    if not tvs:
+        raise HTTPException(status_code=404, detail="No TVs set up yet - use Find TVs")
+    if not tv_id and len(tvs) == 1:
+        return next(iter(tvs.values()))
+    dev = tvs.get(tv_id)
+    if not dev:
+        raise HTTPException(status_code=404, detail="Unknown TV")
+    return dev
+
+def _tv_public(dev: TvDevice) -> Dict[str, Any]:
+    return {
+        "id": dev.id, "name": dev.name, "ip": dev.ip,
+        "connected": dev.available.is_set(), "is_on": dev.state["is_on"],
+        "current_app": dev.state["current_app"], "error": dev.state["error"],
+        "needs_pairing": dev.state["needs_pairing"], "pairing": dev.pairing is not None,
+    }
+
+def _tv_save() -> None:
+    """Writes the TV list next to the certificate (atomically, readable only by this user)."""
+    data = [{"id": d.id, "name": d.name, "ip": d.ip,
+             **({"jellyfin_user_id": d.jellyfin_user_id} if d.jellyfin_user_id else {})} for d in tvs.values()]
+    os.makedirs(TV_CERT_DIR, mode=0o700, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=TV_CERT_DIR, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, TV_STORE)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+def _tv_load() -> None:
+    """Loads the saved TV list; with none saved yet, TV_IP (if set) becomes the first TV."""
+    try:
+        with open(TV_STORE) as f:
+            items = json.load(f)
+    except FileNotFoundError:
+        items = [{"id": "tv", "name": "TV", "ip": TV_IP}] if TV_IP else []
+        seeded = bool(items)
+    except (OSError, ValueError) as e:
+        print(f"[TV Remote] Couldn't read {TV_STORE}: {e}")
+        return
+    else:
+        seeded = False
+    for item in items if isinstance(items, list) else []:
+        try:
+            ip, tv_id = _tv_clean_ip(str(item["ip"])), str(item.get("id") or "")
+            if not _TV_ID_RE.match(tv_id) or tv_id in tvs:
+                tv_id = _tv_new_id(str(item.get("name") or "tv"))
+            user = str(item.get("jellyfin_user_id") or "")
+            tvs[tv_id] = TvDevice(tv_id, _tv_clean_name(str(item.get("name") or "")) or tv_id, ip,
+                                  user if _JF_GUID_RE.fullmatch(user) else "")
+        except (KeyError, TypeError, HTTPException):
+            print(f"[TV Remote] Skipping a bad entry in {TV_STORE}: {item!r}")
+    if seeded and tvs:
+        with contextlib.suppress(OSError):
+            _tv_save()
+
+def _tv_set_available(dev: TvDevice, value: bool) -> None:
+    if value:
+        dev.state.update(error="", needs_pairing=False)
+        dev.available.set()
+    else:
+        dev.available.clear()
+
+async def _tv_make_remote(ip: str) -> Any:
+    """A remote for one TV using the shared certificate (made on first use, once at a time)."""
+    async with _tv_cert_lock:
         os.makedirs(TV_CERT_DIR, mode=0o700, exist_ok=True)
         remote = AndroidTVRemote(
-            TV_CLIENT_NAME, os.path.join(TV_CERT_DIR, "cert.pem"), os.path.join(TV_CERT_DIR, "key.pem"), TV_IP
+            TV_CLIENT_NAME, os.path.join(TV_CERT_DIR, "cert.pem"), os.path.join(TV_CERT_DIR, "key.pem"), ip
         )
         await remote.async_generate_cert_if_missing()
-        remote.add_is_available_updated_callback(_tv_set_available)
-        remote.add_is_on_updated_callback(lambda v: tv_state.update(is_on=v))
-        remote.add_current_app_updated_callback(lambda v: tv_state.update(current_app=v or ""))
+    return remote
+
+async def tv_connect_loop(dev: TvDevice) -> None:
+    """Connects to one TV in the background and keeps the connection alive. A TV that is
+    off or not yet paired just means retrying later; it never blocks the dashboard."""
+    try:
+        remote = await _tv_make_remote(dev.ip)
+        remote.add_is_available_updated_callback(lambda v: _tv_set_available(dev, v))
+        remote.add_is_on_updated_callback(lambda v: dev.state.update(is_on=v))
+        remote.add_current_app_updated_callback(lambda v: dev.state.update(current_app=v or ""))
 
         delay = 5
         while True:
@@ -2327,38 +2431,66 @@ async def tv_connect_loop():
                 await remote.async_connect()
                 break
             except InvalidAuth:
-                tv_state["error"] = "Not paired - run: python tools/tv_remote_test.py pair"
-                await asyncio.sleep(30)          # picks it up on its own once you have paired
+                dev.state.update(error="Not paired yet", needs_pairing=True)
+                await asyncio.sleep(30)          # pairing restarts this loop, so this is just a safety net
             except Exception as e:           # unreachable, or anything unexpected: report it and keep retrying
                 if not isinstance(e, (CannotConnect, ConnectionClosed)):
-                    print(f"[TV Remote Connect Exception]: {e}")
-                tv_state["error"] = ("TV unreachable (off or asleep?)" if isinstance(e, (CannotConnect, ConnectionClosed))
-                                     else f"{type(e).__name__}: {e}")
+                    print(f"[TV Remote Connect Exception] {dev.name}: {e}")
+                dev.state["error"] = ("TV unreachable (off or asleep?)" if isinstance(e, (CannotConnect, ConnectionClosed))
+                                      else f"{type(e).__name__}: {e}")
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 60)
 
-        tv_remote = remote
-        tv_state.update(error="", is_on=remote.is_on, current_app=remote.current_app or "")
-        _tv_set_available(True)
+        dev.remote = remote
+        dev.state.update(error="", needs_pairing=False, is_on=remote.is_on, current_app=remote.current_app or "")
+        _tv_set_available(dev, True)
         remote.keep_reconnecting(
-            invalid_auth_callback=lambda: tv_state.update(error="Pairing was rejected - pair again")
+            invalid_auth_callback=lambda: dev.state.update(error="Pairing was rejected - pair again", needs_pairing=True)
         )
     except Exception as e:
-        print(f"[TV Remote Loop Exception]: {e}")
-        tv_state["error"] = f"{type(e).__name__}: {e}"
+        print(f"[TV Remote Loop Exception] {dev.name}: {e}")
+        dev.state["error"] = f"{type(e).__name__}: {e}"
 
-async def _tv_ready():
-    if not tv_state["configured"]:
-        raise HTTPException(status_code=503, detail="TV remote is not set up (set TV_IP in .env)")
-    if tv_remote is None:
-        raise HTTPException(status_code=503, detail=tv_state["error"] or "Connecting to the TV...")
-    if not _tv_available.is_set():
+def _tv_start(dev: TvDevice) -> None:
+    if AndroidTVRemote is not None:
+        dev.task = asyncio.create_task(tv_connect_loop(dev))
+
+def _tv_close_pairing(dev: TvDevice) -> None:
+    if dev.pairing:
+        dev.pairing.disconnect()
+        dev.pairing = None
+
+def _tv_stop(dev: TvDevice) -> None:
+    """Drops everything held for a TV (connection, retry loop, pending pairing)."""
+    if dev.task:
+        dev.task.cancel()
+        dev.task = None
+    if dev.remote:
+        dev.remote.disconnect()
+        dev.remote = None
+    _tv_close_pairing(dev)
+    _tv_set_available(dev, False)
+    dev.state.update(is_on=None, current_app="")
+
+def _tv_start_all() -> None:
+    _tv_load()
+    if tvs and AndroidTVRemote is None:
+        print("[TV Remote] TVs are set up but androidtvremote2 is not installed (pip install -r requirements.txt).")
+    for dev in tvs.values():
+        _tv_start(dev)
+
+async def _tv_ready(dev: TvDevice):
+    if AndroidTVRemote is None:
+        raise HTTPException(status_code=503, detail="androidtvremote2 is not installed (pip install -r requirements.txt)")
+    if dev.remote is None:
+        raise HTTPException(status_code=503, detail=dev.state["error"] or "Connecting to the TV...")
+    if not dev.available.is_set():
         # The library drops idle connections and reconnects within a moment; give it a beat.
         try:
-            await asyncio.wait_for(_tv_available.wait(), timeout=3)
+            await asyncio.wait_for(dev.available.wait(), timeout=3)
         except asyncio.TimeoutError:
-            raise HTTPException(status_code=503, detail="TV is not reachable right now") from None
-    return tv_remote
+            raise HTTPException(status_code=503, detail=f"{dev.name} is not reachable right now") from None
+    return dev.remote
 
 def _tv_send(action, *args) -> None:
     """Calls one of the remote's send_* methods; a dropped connection becomes a 503 (the library reconnects)."""
@@ -2408,10 +2540,10 @@ async def _ensure_adb_server() -> None:
             _kill_quietly(proc)
         raise RuntimeError("adb server did not start") from None
 
-async def _adb_connect() -> str:
-    """Connects to the TV (a no-op if already connected) and returns its adb serial."""
+async def _adb_connect(ip: str) -> str:
+    """Connects to a TV (a no-op if already connected) and returns its adb serial."""
     await _ensure_adb_server()
-    serial = f"{TV_IP}:{TV_ADB_PORT}"
+    serial = f"{ip}:{TV_ADB_PORT}"
     out = await _run_adb("connect", serial)
     low = out.lower()
     if "unauthorized" in low or "failed to authenticate" in low:
@@ -2420,19 +2552,19 @@ async def _adb_connect() -> str:
         raise RuntimeError(f"ADB could not connect: {out.strip()[:120] or 'no response'}")
     return serial
 
-async def _adb_shell(*shell_args: str) -> str:
-    """Runs one command on the TV through adb, serialized, connecting first if needed."""
+async def _adb_shell(ip: str, *shell_args: str) -> str:
+    """Runs one command on a TV through adb, serialized, connecting first if needed."""
     async with _adb_lock:
-        serial = await _adb_connect()
+        serial = await _adb_connect(ip)
         return await _run_adb("-s", serial, "shell", *shell_args)
 
-async def _adb_launch(package: str) -> None:
+async def _adb_launch(ip: str, package: str) -> None:
     """Opens an installed app by package name. Raises RuntimeError with a readable reason."""
     if not _PACKAGE_RE.match(package):
         raise RuntimeError("invalid package name")
     # TV-only apps (YouTube TV, for one) may register only as LEANBACK_LAUNCHER, which a plain
     # LAUNCHER lookup doesn't find, so ask for both.
-    out = await _adb_shell("monkey", "-p", package, "-c", "android.intent.category.LAUNCHER",
+    out = await _adb_shell(ip, "monkey", "-p", package, "-c", "android.intent.category.LAUNCHER",
                            "-c", "android.intent.category.LEANBACK_LAUNCHER", "1")
     if "No activities found" in out or "monkey aborted" in out:
         raise RuntimeError("That app is not installed on the TV")
@@ -2442,12 +2574,12 @@ async def _adb_launch(package: str) -> None:
 # The only link shape ever sent to the TV; every id in it is hex (validated before it gets here).
 _WHOLPHIN_LINK_RE = re.compile(r"wholphin://play\?serverId=[0-9a-fA-F-]+&userId=[0-9a-fA-F-]+&itemId=[0-9a-fA-F-]+")
 
-async def _adb_open_link(uri: str) -> None:
+async def _adb_open_link(ip: str, uri: str) -> None:
     """Hands a wholphin:// link to the TV (this opens the item's details page)."""
     if not _WHOLPHIN_LINK_RE.fullmatch(uri):
         raise RuntimeError("invalid link")
     # adb joins the arguments and the TV's own shell parses them, so '&' needs the single quotes.
-    out = await _adb_shell(f"am start -a android.intent.action.VIEW -d '{uri}'")
+    out = await _adb_shell(ip, f"am start -a android.intent.action.VIEW -d '{uri}'")
     if "Error" in out or "unable to resolve" in out.lower():
         raise RuntimeError("The TV app didn't accept the link - is Wholphin installed, and recent enough to support links?")
     if "Starting: Intent" not in out:    # "intent delivered to currently running instance" warnings are fine
@@ -2456,12 +2588,9 @@ async def _adb_open_link(uri: str) -> None:
 @app.get("/api/tv/status")
 async def get_tv_status():
     return {
-        "configured": tv_state["configured"],
-        "connected": tv_state["available"],
-        "is_on": tv_state["is_on"],
-        "current_app": tv_state["current_app"],
-        "error": tv_state["error"],
+        "installed": AndroidTVRemote is not None,
         "adb": bool(ADB_BIN),
+        "tvs": [_tv_public(d) for d in tvs.values()],
         "apps": [{"id": app_id, "label": a["label"], "icon": _tv_icon_path(app_id) is not None}
                  for app_id, a in TV_APPS.items()],
     }
@@ -2479,20 +2608,22 @@ async def tv_send_key(payload: TvKeyRequest):
     key = payload.key.upper()
     if key not in TV_KEYS:
         raise HTTPException(status_code=400, detail="Unsupported key")
-    remote = await _tv_ready()
+    dev = _tv_get(payload.tv)
+    remote = await _tv_ready(dev)
     _tv_send(remote.send_key_command, key, "SHORT")
-    return {"status": "sent", "key": key}
+    return {"status": "sent", "key": key, "tv": dev.id}
 
 @app.post("/api/tv/app")
 async def tv_launch_app(payload: TvAppRequest):
     entry = TV_APPS.get(payload.app)
     if not entry:
         raise HTTPException(status_code=404, detail="Unknown app")
+    dev = _tv_get(payload.tv)
     adb_error = ""
     if ADB_BIN:
         try:
-            await _adb_launch(entry["package"])
-            return {"status": "launched", "app": payload.app, "method": "adb"}
+            await _adb_launch(dev.ip, entry["package"])
+            return {"status": "launched", "app": payload.app, "method": "adb", "tv": dev.id}
         except RuntimeError as e:
             adb_error = str(e)
             if not entry.get("link"):
@@ -2502,9 +2633,111 @@ async def tv_launch_app(payload: TvAppRequest):
     link = entry.get("link")
     if not link:     # a bare package name is not a link: TVs reject it or open the wrong app
         raise HTTPException(status_code=503, detail=f"Launching {entry['label']} needs ADB: install adb and authorize this machine (see the README)")
-    remote = await _tv_ready()
+    remote = await _tv_ready(dev)
     _tv_send(remote.send_launch_app_command, link)
-    return {"status": "requested", "app": payload.app, "method": "link", "adb_error": adb_error}
+    return {"status": "requested", "app": payload.app, "method": "link", "adb_error": adb_error, "tv": dev.id}
+
+@app.post("/api/tv/discover")
+async def tv_discover():
+    """Searches the LAN and Tailscale for TVs (a few seconds) and marks the ones already added."""
+    if _tv_discover_lock.locked():
+        raise HTTPException(status_code=409, detail="A search is already running")
+    async with _tv_discover_lock:
+        try:
+            result = await tv_discovery.discover()
+        except tv_discovery.DiscoveryError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from None
+    known = {d.ip for d in tvs.values()}
+    for tv in result["tvs"]:
+        tv["known"] = tv["ip"] in known
+    return result
+
+@app.post("/api/tv")
+async def tv_add(payload: TvAddRequest):
+    if AndroidTVRemote is None:
+        raise HTTPException(status_code=503, detail="androidtvremote2 is not installed (pip install -r requirements.txt)")
+    ip = _tv_clean_ip(payload.ip)
+    if any(d.ip == ip for d in tvs.values()):
+        raise HTTPException(status_code=409, detail="That TV is already added")
+    if len(tvs) >= TV_MAX:
+        raise HTTPException(status_code=400, detail=f"At most {TV_MAX} TVs")
+    name = _tv_clean_name(payload.name) or f"TV {len(tvs) + 1}"
+    dev = TvDevice(_tv_new_id(name), name, ip)
+    tvs[dev.id] = dev
+    try:
+        _tv_save()
+    except OSError as e:
+        del tvs[dev.id]
+        raise HTTPException(status_code=500, detail=f"Couldn't save the TV list: {e.strerror or e}") from None
+    _tv_start(dev)
+    return _tv_public(dev)
+
+@app.patch("/api/tv/{tv_id}")
+async def tv_edit(tv_id: str, payload: TvEditRequest):
+    dev = _tv_get(tv_id)
+    if payload.name is not None:
+        name = _tv_clean_name(payload.name)
+        if not name:
+            raise HTTPException(status_code=400, detail="Give the TV a name")
+        dev.name = name
+    if payload.jellyfin_user_id is not None:
+        user = payload.jellyfin_user_id.strip()
+        if user and not _JF_GUID_RE.fullmatch(user):
+            raise HTTPException(status_code=400, detail="Invalid Jellyfin user id")
+        dev.jellyfin_user_id = user
+    try:
+        _tv_save()
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Couldn't save the TV list: {e.strerror or e}") from None
+    return _tv_public(dev)
+
+@app.delete("/api/tv/{tv_id}")
+async def tv_remove(tv_id: str):
+    dev = _tv_get(tv_id)
+    _tv_stop(dev)
+    del tvs[dev.id]
+    try:
+        _tv_save()
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Removed, but couldn't save the TV list: {e.strerror or e}") from None
+    return {"status": "removed", "tv": tv_id}
+
+@app.post("/api/tv/{tv_id}/pair/start")
+async def tv_pair_start(tv_id: str):
+    """Asks the TV to show a pairing code; the code goes to /pair/finish."""
+    if AndroidTVRemote is None:
+        raise HTTPException(status_code=503, detail="androidtvremote2 is not installed (pip install -r requirements.txt)")
+    dev = _tv_get(tv_id)
+    _tv_close_pairing(dev)
+    remote = await _tv_make_remote(dev.ip)
+    try:
+        await asyncio.wait_for(remote.async_start_pairing(), timeout=10)
+    except (CannotConnect, ConnectionClosed, asyncio.TimeoutError, OSError):
+        remote.disconnect()
+        raise HTTPException(status_code=502, detail="Couldn't reach the TV to start pairing - is it on?") from None
+    dev.pairing = remote
+    return {"status": "waiting_for_code"}
+
+@app.post("/api/tv/{tv_id}/pair/finish")
+async def tv_pair_finish(tv_id: str, payload: TvPairRequest):
+    dev = _tv_get(tv_id)
+    remote = dev.pairing
+    if not remote:
+        raise HTTPException(status_code=409, detail="Start pairing first")
+    code = payload.code.strip()
+    if not _TV_CODE_RE.match(code):
+        raise HTTPException(status_code=400, detail="The code is 6 characters (0-9 and A-F), shown on the TV")
+    try:
+        await asyncio.wait_for(remote.async_finish_pairing(code.upper()), timeout=15)
+    except InvalidAuth:
+        raise HTTPException(status_code=400, detail="Wrong code - check the TV and try again") from None
+    except (CannotConnect, ConnectionClosed, asyncio.TimeoutError, OSError):
+        _tv_close_pairing(dev)
+        raise HTTPException(status_code=502, detail="Lost the connection to the TV - start pairing again") from None
+    dev.pairing = None
+    _tv_stop(dev)          # reconnect from scratch with the newly paired certificate
+    _tv_start(dev)
+    return {"status": "paired"}
 
 # --- Open on TV: browse Jellyfin here, open the title's page in Wholphin on the TV ---
 # Wholphin ignores play commands sent through Jellyfin (its session advertises none), but it does
@@ -2518,6 +2751,7 @@ _JF_GUID_RE = re.compile(r"[0-9a-fA-F]{32}|[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0
 _CAST_TYPES = ("Movie", "Episode")
 
 class TvOpenRequest(BaseModel):
+    tv: str = ""
     item_id: str
 
 async def _jf_get(path: str, params: Any = None, timeout: float = 6.0) -> Any:
@@ -2561,12 +2795,19 @@ async def tv_library(q: str = "", series: str = ""):
     data = await _jf_get("/Items", params)
     return {"items": [_jf_item_summary(i) for i in data.get("Items", []) if i.get("Id")]}
 
-def _pick_tv_session(sessions: List[Dict[str, Any]]) -> Any:
-    matches = [
+def _pick_tv_session(sessions: List[Dict[str, Any]], ip: str = "") -> Any:
+    """The TV app's Jellyfin session. A session coming from the TV's own address wins, which keeps
+    several TVs apart; otherwise the most recent session whose client/device name matches."""
+    def newest(found):
+        return max(found, key=lambda x: x.get("LastActivityDate", "")) if found else None
+    if ip:
+        here = newest([x for x in sessions if str(x.get("RemoteEndPoint", "")).removeprefix("::ffff:") == ip and x.get("UserId")])
+        if here:
+            return here
+    return newest([
         x for x in sessions
         if TV_JELLYFIN_CLIENT in f'{x.get("Client", "")} {x.get("DeviceName", "")}'.lower()
-    ]
-    return max(matches, key=lambda x: x.get("LastActivityDate", "")) if matches else None
+    ])
 
 _jf_server_id_cache = ""
 
@@ -2576,12 +2817,12 @@ async def _jf_server_id() -> str:
         _jf_server_id_cache = str((await _jf_get("/System/Info/Public", timeout=4.0)).get("Id") or "")
     return _jf_server_id_cache
 
-async def _tv_jellyfin_user_id() -> str:
-    """The Jellyfin user the TV app is signed in as: from TV_JELLYFIN_USER_ID, else from its
-    Jellyfin session, else the only user on the server."""
-    if TV_JELLYFIN_USER_ID:
-        return TV_JELLYFIN_USER_ID
-    session = _pick_tv_session(await _jf_get("/Sessions", timeout=3.0))
+async def _tv_jellyfin_user_id(dev: TvDevice) -> str:
+    """The Jellyfin user the TV app is signed in as: the TV's own saved setting, else
+    TV_JELLYFIN_USER_ID, else its Jellyfin session, else the only user on the server."""
+    if dev.jellyfin_user_id or TV_JELLYFIN_USER_ID:
+        return dev.jellyfin_user_id or TV_JELLYFIN_USER_ID
+    session = _pick_tv_session(await _jf_get("/Sessions", timeout=3.0), dev.ip)
     if session and session.get("UserId"):
         return str(session["UserId"])
     users = await _jf_get("/Users", timeout=4.0)
@@ -2601,16 +2842,17 @@ async def tv_open(payload: TvOpenRequest):
     item = items[0]
     if item.get("Type") not in _CAST_TYPES:
         raise HTTPException(status_code=400, detail="Only movies and episodes can be opened on the TV")
-    if not (ADB_BIN and TV_IP):
+    dev = _tv_get(payload.tv)
+    if not ADB_BIN:
         raise HTTPException(status_code=503, detail=(
             "Opening titles on the TV needs ADB: install adb and authorize this machine (see the README)"
         ))
     try:
-        server_id, user_id = await _jf_server_id(), await _tv_jellyfin_user_id()
+        server_id, user_id = await _jf_server_id(), await _tv_jellyfin_user_id(dev)
         if not (_JF_GUID_RE.fullmatch(server_id) and _JF_GUID_RE.fullmatch(user_id)):
             raise HTTPException(status_code=502, detail="Jellyfin returned an unexpected server or user id")
         link = f"wholphin://play?serverId={server_id}&userId={user_id}&itemId={payload.item_id}"
-        await _adb_open_link(link)
+        await _adb_open_link(dev.ip, link)
     except HTTPException:
         raise
     except RuntimeError as e:
@@ -2620,8 +2862,8 @@ async def tv_open(payload: TvOpenRequest):
         # instead of a bare "Error 500".
         traceback.print_exc()
         raise HTTPException(status_code=502, detail=f"Unexpected error: {type(e).__name__}: {e}") from None
-    print(f"[Open on TV] {item.get('Name')!r}")
-    return {"status": "opened", "name": item.get("Name")}
+    print(f"[Open on TV] {item.get('Name')!r} on {dev.name}")
+    return {"status": "opened", "name": item.get("Name"), "tv": dev.id}
 
 if __name__ == "__main__":
     import uvicorn

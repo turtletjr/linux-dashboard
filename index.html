@@ -376,6 +376,43 @@
                         <span id="tv-status-badge" class="ml-auto text-[10px] px-2 py-0.5 font-sans font-semibold rounded normal-case bg-slate-700 text-slate-400">Offline</span>
                     </h2>
                     <div class="space-y-3">
+                        <div class="space-y-2">
+                            <div class="flex items-center gap-2">
+                                <select id="tv-select" aria-label="Which TV"
+                                        class="min-w-0 flex-1 rounded-lg bg-slate-900/60 border border-slate-700 px-2 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-emerald-500"></select>
+                                <button id="tv-find-btn" type="button" class="tv-btn px-2 shrink-0" style="min-height:2rem" title="Find or add TVs" data-tv-find><i data-lucide="search"></i></button>
+                                <button id="tv-rename-btn" type="button" class="tv-btn px-2 shrink-0" style="min-height:2rem" title="Rename this TV" data-tv-rename><i data-lucide="pencil"></i></button>
+                                <button id="tv-remove-btn" type="button" class="tv-btn px-2 shrink-0" style="min-height:2rem" title="Remove this TV" data-tv-remove><i data-lucide="trash-2"></i></button>
+                            </div>
+                            <div id="tv-pair-panel" class="hidden rounded-lg bg-amber-500/5 border border-amber-500/20 p-2 space-y-2">
+                                <div id="tv-pair-text" class="text-[11px] text-amber-300"></div>
+                                <div id="tv-pair-start-row" class="hidden">
+                                    <button type="button" class="tv-btn px-3 w-full" style="min-height:2rem" data-tv-pair-start>Start pairing</button>
+                                </div>
+                                <div id="tv-pair-code-row" class="hidden">
+                                    <div class="flex items-center gap-2">
+                                        <input id="tv-pair-code" type="text" maxlength="6" autocomplete="off" autocapitalize="characters" spellcheck="false"
+                                               placeholder="Code on the TV" aria-label="Pairing code shown on the TV"
+                                               class="min-w-0 flex-1 rounded-lg bg-slate-900/60 border border-slate-700 px-2 py-1.5 text-sm font-mono uppercase text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500">
+                                        <button type="button" class="tv-btn px-3 shrink-0" style="min-height:2rem" data-tv-pair-finish>Pair</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div id="tv-find-panel" class="hidden rounded-lg bg-slate-900/40 border border-slate-700/50 p-2 space-y-2">
+                                <div class="flex items-center gap-2">
+                                    <div class="text-[10px] font-mono uppercase tracking-wide text-slate-500 flex-1">Find TVs</div>
+                                    <button type="button" class="tv-btn px-2" style="min-height:1.5rem" data-tv-find>Search again</button>
+                                    <button type="button" class="tv-btn px-2" style="min-height:1.5rem" data-tv-find-close title="Close">&times;</button>
+                                </div>
+                                <div id="tv-find-status" class="text-[11px] font-mono text-slate-400"></div>
+                                <div id="tv-find-list" class="space-y-2 max-h-56 overflow-y-auto pr-1"></div>
+                                <div class="flex items-center gap-2 border-t border-slate-700/40 pt-2">
+                                    <input id="tv-add-ip" type="text" inputmode="decimal" autocomplete="off" placeholder="Or enter an IP address" aria-label="TV IP address"
+                                           class="min-w-0 flex-1 rounded-lg bg-slate-900/60 border border-slate-700 px-2 py-1.5 text-sm font-mono text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500">
+                                    <button type="button" class="tv-btn px-3 shrink-0" style="min-height:2rem" data-tv-add-manual>Add</button>
+                                </div>
+                            </div>
+                        </div>
                         <div class="grid grid-cols-4 gap-2">
                             <button type="button" class="tv-btn" data-tv-key="BACK" title="Back">Back</button>
                             <button type="button" class="tv-btn" data-tv-key="HOME" title="Home">Home</button>
@@ -416,6 +453,7 @@
                         <i data-lucide="monitor-play" class="w-4 h-4 text-purple-400"></i> Open on TV
                     </h2>
                     <div class="space-y-2">
+                        <div id="cast-target" class="text-[10px] font-mono text-slate-500 truncate"></div>
                         <input id="cast-search" type="search" placeholder="Search movies and shows..." autocomplete="off"
                                class="w-full rounded-lg bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500">
                         <div class="flex items-center gap-2 min-h-[1.5rem]">
@@ -1528,6 +1566,16 @@ async function updatePiholeData() {
         // volume keys auto-repeat while held. The backend only accepts keys from its own allowlist.
         const TV_REPEAT_KEYS = new Set(['DPAD_UP', 'DPAD_DOWN', 'DPAD_LEFT', 'DPAD_RIGHT', 'VOLUME_UP', 'VOLUME_DOWN']);
         let tvRepeatDelay = null, tvRepeatTimer = null, tvSending = false, tvMsgTimer = null, tvAppsKey = '';
+        // Several TVs: one selection, shared by the remote and by Open on TV, remembered in this browser.
+        let tvList = [], tvListKey = '', tvInstalled = true, tvFindBusy = false, tvPairBusy = false;
+        let tvSelected = '';
+        try { tvSelected = localStorage.getItem('dashboard.tvSelected') || ''; } catch (e) { /* storage can be blocked */ }
+        const tvCurrent = () => tvList.find(t => t.id === tvSelected) || null;
+        function tvChoose(id) {
+            tvSelected = id;
+            try { localStorage.setItem('dashboard.tvSelected', id); } catch (e) { /* storage can be blocked */ }
+        }
+        const tvStateLabel = (t) => !t.connected ? (t.needs_pairing ? 'not paired' : 'offline') : (t.is_on === false ? 'standby' : 'online');
 
         function showTvMessage(text, isError) {
             const el = document.getElementById('tv-msg');
@@ -1551,7 +1599,7 @@ async function updatePiholeData() {
                 const res = await fetch('/api/tv/key', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ key })
+                    body: JSON.stringify({ tv: tvSelected, key })
                 });
                 if (!res.ok) {
                     const err = await res.json().catch(() => ({}));
@@ -1571,7 +1619,7 @@ async function updatePiholeData() {
                 const res = await fetch('/api/tv/app', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ app })
+                    body: JSON.stringify({ tv: tvSelected, app })
                 });
                 if (res.ok) {
                     const d = await res.json().catch(() => ({}));
@@ -1614,12 +1662,148 @@ async function updatePiholeData() {
                 return;
             }
             const appBtn = e.target.closest('[data-tv-app]');
-            if (appBtn) launchTvApp(appBtn.dataset.tvApp, appBtn.textContent.trim());
+            if (appBtn) { launchTvApp(appBtn.dataset.tvApp, appBtn.textContent.trim()); return; }
+            if (e.target.closest('[data-tv-find]')) { tvFind(); return; }
+            if (e.target.closest('[data-tv-find-close]')) { document.getElementById('tv-find-panel').classList.add('hidden'); return; }
+            const addBtn = e.target.closest('[data-tv-add]');
+            if (addBtn) { tvAdd(addBtn.dataset.tvAdd, addBtn.dataset.tvAddName || '', addBtn); return; }
+            const manual = e.target.closest('[data-tv-add-manual]');
+            if (manual) { tvAdd(document.getElementById('tv-add-ip').value.trim(), '', manual); return; }
+            if (e.target.closest('[data-tv-rename]')) { tvRename(); return; }
+            if (e.target.closest('[data-tv-remove]')) { tvRemove(); return; }
+            const pairStart = e.target.closest('[data-tv-pair-start]');
+            if (pairStart) { tvPairStart(pairStart); return; }
+            const pairFinish = e.target.closest('[data-tv-pair-finish]');
+            if (pairFinish) tvPairFinish(pairFinish);
+        });
+        document.addEventListener('change', (e) => {
+            if (e.target.id === 'tv-select') { tvChoose(e.target.value); updateTvStatus(); }
+        });
+        document.addEventListener('keydown', (e) => {
+            if (e.key !== 'Enter') return;
+            if (e.target.id === 'tv-add-ip') document.querySelector('[data-tv-add-manual]').click();
+            else if (e.target.id === 'tv-pair-code') document.querySelector('[data-tv-pair-finish]').click();
         });
 
-        async function updateTvStatus() {
+        // Small JSON helper for the TV management calls: returns {ok, data}; never throws.
+        async function tvApi(method, url, body) {
+            try {
+                const res = await fetch(url, {
+                    method,
+                    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+                    body: body ? JSON.stringify(body) : undefined
+                });
+                const data = await res.json().catch(() => ({}));
+                return { ok: res.ok, data: res.ok ? data : { detail: data.detail || `Dashboard error ${res.status}` } };
+            } catch (e) {
+                return { ok: false, data: { detail: 'Request failed - check your connection' } };
+            }
+        }
+
+        function tvFindRowHtml(t) {
+            const extra = [t.network, t.adb ? 'ADB open' : ''].filter(Boolean).join(' \u00b7 ');
+            return `<div class="flex items-center gap-2 p-2 rounded-lg bg-slate-900/40 border border-slate-700/40">
+                <div class="min-w-0 flex-1">
+                    <div class="text-sm text-slate-200 truncate">${escapeHtml(t.name || 'Android TV')}</div>
+                    <div class="text-[10px] font-mono text-slate-500 truncate">${escapeHtml(t.ip)} \u00b7 ${escapeHtml(extra)}</div>
+                </div>
+                ${t.known ? '<span class="text-[10px] font-mono text-slate-500 shrink-0">Added</span>'
+                    : `<button type="button" class="tv-btn px-3 shrink-0" style="min-height:2rem" data-tv-add="${escapeHtml(t.ip)}" data-tv-add-name="${escapeHtml(t.name || '')}">Add</button>`}
+            </div>`;
+        }
+
+        async function tvFind() {
+            if (tvFindBusy) return;
+            tvFindBusy = true;
+            const panel = document.getElementById('tv-find-panel');
+            const status = document.getElementById('tv-find-status');
+            const list = document.getElementById('tv-find-list');
+            panel.classList.remove('hidden');
+            list.innerHTML = '';
+            status.className = 'text-[11px] font-mono text-slate-400';
+            status.textContent = 'Searching your network and Tailscale (about 10 seconds)...';
+            const r = await tvApi('POST', '/api/tv/discover');
+            tvFindBusy = false;
+            if (!r.ok) {
+                status.className = 'text-[11px] font-mono text-rose-400';
+                status.textContent = r.data.detail;
+                return;
+            }
+            const tvs = r.data.tvs || [];
+            list.innerHTML = tvs.map(tvFindRowHtml).join('');
+            status.textContent = (tvs.length
+                ? `Found ${tvs.length} TV${tvs.length === 1 ? '' : 's'}`
+                : 'No TVs found. Make sure the TV is fully on (not standby), or add it by IP below.')
+                + (r.data.notes && r.data.notes.length ? ' \u2014 ' + r.data.notes.join('; ') : '');
+        }
+
+        async function tvAdd(ip, suggestedName, btn) {
+            if (!ip) { showTvMessage('Enter the TV\'s IP address', true); return; }
+            const name = prompt('Name for this TV:', suggestedName);
+            if (name === null) return;
+            btn.disabled = true;
+            const r = await tvApi('POST', '/api/tv', { name, ip });
+            btn.disabled = false;
+            if (!r.ok) { showTvMessage(r.data.detail, true); return; }
+            tvChoose(r.data.id);
+            document.getElementById('tv-add-ip').value = '';
+            showTvMessage(`Added ${r.data.name}`, false);
+            if (btn.dataset.tvAdd) btn.replaceWith(Object.assign(document.createElement('span'),
+                { className: 'text-[10px] font-mono text-slate-500 shrink-0', textContent: 'Added' }));
+            await updateTvStatus();
+            setTimeout(updateTvStatus, 1500);   // the "not paired" state shows up once the first connect attempt fails
+        }
+
+        async function tvRename() {
+            const cur = tvCurrent();
+            if (!cur) return;
+            const name = prompt('New name for this TV:', cur.name);
+            if (name === null) return;
+            const r = await tvApi('PATCH', `/api/tv/${encodeURIComponent(cur.id)}`, { name });
+            if (!r.ok) showTvMessage(r.data.detail, true);
+            updateTvStatus();
+        }
+
+        async function tvRemove() {
+            const cur = tvCurrent();
+            if (!cur || !confirm(`Remove ${cur.name} from the dashboard? (This doesn't unpair it on the TV.)`)) return;
+            const r = await tvApi('DELETE', `/api/tv/${encodeURIComponent(cur.id)}`);
+            showTvMessage(r.ok ? `Removed ${cur.name}` : r.data.detail, !r.ok);
+            updateTvStatus();
+        }
+
+        async function tvPairStart(btn) {
+            const cur = tvCurrent();
+            if (!cur || tvPairBusy) return;
+            tvPairBusy = true; btn.disabled = true;
+            const r = await tvApi('POST', `/api/tv/${encodeURIComponent(cur.id)}/pair/start`);
+            tvPairBusy = false; btn.disabled = false;
+            if (!r.ok) { showTvMessage(r.data.detail, true); return; }
+            await updateTvStatus();
+            const input = document.getElementById('tv-pair-code');
+            input.value = '';
+            input.focus();
+        }
+
+        async function tvPairFinish(btn) {
+            const cur = tvCurrent();
+            const input = document.getElementById('tv-pair-code');
+            if (!cur || tvPairBusy) return;
+            tvPairBusy = true; btn.disabled = true;
+            const r = await tvApi('POST', `/api/tv/${encodeURIComponent(cur.id)}/pair/finish`, { code: input.value.trim() });
+            tvPairBusy = false; btn.disabled = false;
+            if (r.ok) {
+                input.value = '';
+                showTvMessage(`${cur.name} is paired`, false);
+                setTimeout(updateTvStatus, 800);
+            } else {
+                showTvMessage(r.data.detail, true);
+            }
+            updateTvStatus();
+        }
+
+        function renderTvStatus(d) {
             const badge = document.getElementById('tv-status-badge');
-            if (!badge) return;
             const base = 'ml-auto text-[10px] px-2 py-0.5 font-sans font-semibold rounded normal-case ';
             const styles = {
                 online: 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20',
@@ -1627,30 +1811,74 @@ async function updatePiholeData() {
                 offline: 'bg-rose-500/10 text-rose-400 border border-rose-500/20',
                 off: 'bg-slate-500/10 text-slate-400 border border-slate-500/20'
             };
+            tvInstalled = d.installed !== false;
+            tvList = d.tvs || [];
+            if (!tvList.some(t => t.id === tvSelected)) tvChoose(tvList.length ? tvList[0].id : '');
+            const sel = tvCurrent();
+
+            // The dropdown is rebuilt only when something in it changed, so it never closes under your finger.
+            const select = document.getElementById('tv-select');
+            const listKey = JSON.stringify(tvList.map(t => [t.id, t.name, tvStateLabel(t)])) + '|' + tvSelected;
+            if (listKey !== tvListKey) {
+                tvListKey = listKey;
+                select.innerHTML = tvList.length
+                    ? tvList.map(t => {
+                        const st = tvStateLabel(t);
+                        return `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}${st === 'online' ? '' : ' \u00b7 ' + st}</option>`;
+                    }).join('')
+                    : '<option value="">No TVs yet</option>';
+                select.value = tvSelected;
+            }
+            select.disabled = !tvList.length;
+            document.getElementById('tv-rename-btn').disabled = !sel;
+            document.getElementById('tv-remove-btn').disabled = !sel;
+
+            let label, style;
+            if (!tvInstalled) { label = 'Not set up'; style = styles.off; }
+            else if (!sel) { label = 'No TV'; style = styles.off; }
+            else if (!sel.connected) { label = sel.needs_pairing ? 'Not paired' : 'Offline'; style = sel.needs_pairing ? styles.standby : styles.offline; }
+            else if (sel.is_on === false) { label = 'Standby'; style = styles.standby; }
+            else { label = 'Online'; style = styles.online; }
+            badge.className = base + style;
+            badge.innerText = label;
+
             const nowEl = document.getElementById('tv-now');
+            nowEl.textContent = !tvInstalled ? 'Run: pip install -r requirements.txt, then restart the dashboard'
+                : !sel ? 'Use the search button to find your TVs'
+                : (sel.error || (sel.current_app ? `Foreground: ${sel.current_app}` : ''));
+
+            const pairPanel = document.getElementById('tv-pair-panel');
+            const needsPair = !!sel && (sel.needs_pairing || sel.pairing);
+            pairPanel.classList.toggle('hidden', !needsPair);
+            if (needsPair) {
+                document.getElementById('tv-pair-text').textContent = sel.pairing
+                    ? `Type the code now showing on ${sel.name}'s screen.`
+                    : `${sel.name} isn't paired with the dashboard yet. Turn it on, then start pairing: it will show a code.`;
+                document.getElementById('tv-pair-start-row').classList.toggle('hidden', !!sel.pairing);
+                document.getElementById('tv-pair-code-row').classList.toggle('hidden', !sel.pairing);
+            }
+
+            const target = document.getElementById('cast-target');
+            if (target) target.textContent = sel ? `Opening on: ${sel.name}` : 'No TV selected - add one in the TV Remote widget';
+
+            const appsKey = JSON.stringify(d.apps || []);
+            if (appsKey !== tvAppsKey) {   // only rebuild the launcher when the list changes
+                tvAppsKey = appsKey;
+                document.getElementById('tv-apps').innerHTML = (d.apps || []).map(a =>
+                    `<button type="button" class="tv-btn px-3" data-tv-app="${escapeHtml(a.id)}">${a.icon ? `<img alt="" src="/api/tv/icon/${encodeURIComponent(a.id)}">` : ''}${escapeHtml(a.label)}</button>`
+                ).join('');
+            }
+        }
+
+        async function updateTvStatus() {
+            const badge = document.getElementById('tv-status-badge');
+            if (!badge) return;
             try {
                 const res = await fetch('/api/tv/status');
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                const d = await res.json();
-                let label, style;
-                if (!d.configured) { label = 'Not set up'; style = styles.off; }
-                else if (!d.connected) { label = 'Offline'; style = styles.offline; }
-                else if (d.is_on === false) { label = 'Standby'; style = styles.standby; }
-                else { label = 'Online'; style = styles.online; }
-                badge.className = base + style;
-                badge.innerText = label;
-                nowEl.textContent = !d.configured ? 'Set TV_IP in .env to enable the remote'
-                    : (d.error || (d.current_app ? `Foreground: ${d.current_app}` : ''));
-
-                const appsKey = JSON.stringify(d.apps || []);
-                if (appsKey !== tvAppsKey) {   // only rebuild the launcher when the list changes
-                    tvAppsKey = appsKey;
-                    document.getElementById('tv-apps').innerHTML = (d.apps || []).map(a =>
-                        `<button type="button" class="tv-btn px-3" data-tv-app="${escapeHtml(a.id)}">${a.icon ? `<img alt="" src="/api/tv/icon/${encodeURIComponent(a.id)}">` : ''}${escapeHtml(a.label)}</button>`
-                    ).join('');
-                }
+                renderTvStatus(await res.json());
             } catch (e) {
-                badge.className = base + styles.offline;
+                badge.className = 'ml-auto text-[10px] px-2 py-0.5 font-sans font-semibold rounded normal-case bg-rose-500/10 text-rose-400 border border-rose-500/20';
                 badge.innerText = 'Offline';
                 console.error("TV status update dropped:", e);
             }
@@ -1716,15 +1944,15 @@ async function updatePiholeData() {
             if (castBusy) return;
             castBusy = true;
             btn.disabled = true;
-            showCastMessage(`Opening "${name}" on the TV...`, false, true);
+            showCastMessage(`Opening "${name}" on ${(tvCurrent() || {}).name || 'the TV'}...`, false, true);
             try {
                 const res = await fetch('/api/tv/open', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ item_id: id })
+                    body: JSON.stringify({ tv: tvSelected, item_id: id })
                 });
                 const d = await res.json().catch(() => ({}));
-                if (res.ok) showCastMessage(`Opened on TV: ${d.name || name} - press Play there`, false);
+                if (res.ok) showCastMessage(`Opened on ${(tvCurrent() || {}).name || 'the TV'}: ${d.name || name} - press Play there`, false);
                 else showCastMessage(d.detail || `Dashboard error ${res.status} - see: journalctl -u dashboard`, true);
             } catch (e) {
                 showCastMessage('Request failed - check your connection', true);
