@@ -88,9 +88,8 @@ using credentials from `.env`.
     (Jellyfin's bundled copy in `/usr/lib/jellyfin-ffmpeg` is found automatically)
   - WireGuard (`wg-quick@<tunnel>.service`) and/or Tailscale running
   - The `windscribe-switch` script at `/usr/local/bin/windscribe-switch`,
-    with Windscribe WireGuard `.conf` files (or legacy `<name>.env` files)
-    in `/etc/wireguard/locations/` — the script is included in this repo as
-    `windscribe-switch`, see [Components](#components)
+    with its `/etc/wireguard/locations/*.env` files already set up — this
+    script is not included in this repo, see [Components](#components)
 
 ## Installation
 
@@ -118,12 +117,7 @@ sudo nano /etc/sudoers.d/dashboard # replace <YOUR_USERNAME> with your actual us
 sudo chmod 440 /etc/sudoers.d/dashboard
 sudo visudo -c                     # validates syntax — fix anything it flags
 
-# 6. Install the Windscribe location switcher (skip if you don't use Windscribe)
-sudo install -m 755 -o root -g root windscribe-switch /usr/local/bin/windscribe-switch
-                                    # then drop Windscribe .conf files into
-                                    # /etc/wireguard/locations/ (chmod 600)
-
-# 7. Run it
+# 6. Run it
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
@@ -220,7 +214,7 @@ sudo journalctl -u dashboard -n 200 | grep -i "Config Warning"   # should be emp
 | Pi-hole Updates | `pihole -v` (parsed) + `pihole -up` | |
 | Active Streams (Jellyfin) | Jellyfin `/Sessions` API | Play/pause, stop, toggle English subtitles. Poster art is proxied through the dashboard (`/api/jellyfin/poster/<id>`, using `JELLYFIN_URL`), so your browser only needs to reach the dashboard, not Jellyfin directly. |
 | Tunnel Routing Topology | `wg show <tunnel> dump`, `tailscale status --json` | |
-| Windscribe Location Switcher | `windscribe-switch` — a bash script included in this repo, installed to `/usr/local/bin/windscribe-switch` | Switches between pre-configured Windscribe WireGuard locations, with handshake verification and automatic revert if the new location fails to connect. This app only shells out to it — to add a location, drop the `.conf` file you download from Windscribe into `/etc/wireguard/locations/` — no reformatting. The name shown in the dropdown comes from the filename (`Windscribe-Boston-Harvard-WG.conf` → `Boston-Harvard`). Legacy `<name>.env` files still work. See the script's own header comment for details. |
+| Windscribe Location Switcher | `windscribe-switch` — a bash script at `/usr/local/bin/windscribe-switch` (not part of this repo) | Switches between pre-configured Windscribe WireGuard locations, with handshake verification and automatic revert if the new location fails to connect. This app only shells out to it — see the script's own header comment for the expected `/etc/wireguard/locations/*.env` layout. |
 | Media Integrity | `check_media_headers.sh` (in this repo) via `POST /api/media/check`, `POST /api/media/cancel`, `GET /api/media/status` | Read-only scan for blank, truncated or corrupt video files. Three modes: *header* (first bytes only, fast), *probe* (`ffprobe` reads every packet — reads the whole drive) and *full* (`ffmpeg` decodes everything — very slow on a Pi). Runs as one background job at a time, at low CPU/disk priority, with a progress bar and a Cancel button. Results come from the script's report file and survive a dashboard restart; **Re-check listed** re-tests only the files from the last report. Refuses to run when the library isn't mounted, so an unmounted drive can't produce a false "clean". It never modifies, moves or deletes media. |
 | BitTorrent Engine | qBittorrent WebUI API (`/api/v2/...`) | Session-cookie auth, cached and re-authenticated on expiry |
 

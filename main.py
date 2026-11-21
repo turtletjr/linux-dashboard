@@ -172,9 +172,9 @@ SERVICES_TO_MONITOR = [
     "smbd"
 ]
 
-# windscribe-switch (source: ./windscribe-switch in this repo, installed at
-# /usr/local/bin/windscribe-switch) — a bash script that switches Windscribe
-# WireGuard locations via a shared template + per-location .conf/.env files, with handshake
+# windscribe-switch (github location: /usr/local/bin/windscribe-switch) —
+# a separately-maintained bash script that switches Windscribe WireGuard
+# locations via a shared template + per-location .env files, with handshake
 # verification and auto-revert on failure. This app shells out to it; it
 # does not reimplement any of that logic.
 WINDSCRIBE_SWITCH_BIN = "/usr/local/bin/windscribe-switch"
