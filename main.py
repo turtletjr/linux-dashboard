@@ -2741,14 +2741,14 @@ async def tv_pair_finish(tv_id: str, payload: TvPairRequest):
 
 # --- Open on TV: browse Jellyfin here, open the title's page in Wholphin on the TV ---
 # Wholphin ignores play commands sent through Jellyfin (its session advertises none), but it does
-# accept a wholphin:// link, which the dashboard sends over ADB. The link opens the item's details
-# page; pressing Play is left to the remote. TV_JELLYFIN_CLIENT is matched against each Jellyfin
+# accept a wholphin:// link, which the dashboard sends over ADB. The link opens the item's page
+# (a movie's or a show's); pressing Play is left to the remote. TV_JELLYFIN_CLIENT is matched against each Jellyfin
 # session's client / device name (case-insensitive) to find the TV's Jellyfin user; set
 # TV_JELLYFIN_USER_ID to skip that lookup.
 TV_JELLYFIN_CLIENT = (os.environ.get("TV_JELLYFIN_CLIENT", "").strip() or "Wholphin").lower()   # blank must not match every session
 TV_JELLYFIN_USER_ID = os.environ.get("TV_JELLYFIN_USER_ID", "").strip()
 _JF_GUID_RE = re.compile(r"[0-9a-fA-F]{32}|[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
-_CAST_TYPES = ("Movie", "Episode")
+_CAST_TYPES = ("Movie", "Series", "Episode")
 
 class TvOpenRequest(BaseModel):
     tv: str = ""
@@ -2780,15 +2780,10 @@ def _jf_item_summary(item: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 @app.get("/api/tv/library")
-async def tv_library(q: str = "", series: str = ""):
-    """Latest additions, a title search, or the episodes of one series."""
+async def tv_library(q: str = ""):
+    """Latest additions, or a title search (movies and shows)."""
     params: Dict[str, Any] = {"recursive": "true"}
-    if series:
-        if not _JF_GUID_RE.fullmatch(series):
-            raise HTTPException(status_code=400, detail="Invalid series id")
-        params.update(parentId=series, includeItemTypes="Episode", sortBy="ParentIndexNumber,IndexNumber",
-                      sortOrder="Ascending", limit=300)
-    elif q.strip():
+    if q.strip():
         params.update(searchTerm=q.strip()[:80], includeItemTypes="Movie,Series", sortBy="SortName", limit=30)
     else:
         params.update(includeItemTypes="Movie,Series", sortBy="DateCreated", sortOrder="Descending", limit=24)
@@ -2841,7 +2836,7 @@ async def tv_open(payload: TvOpenRequest):
         raise HTTPException(status_code=404, detail="Item not found in Jellyfin")
     item = items[0]
     if item.get("Type") not in _CAST_TYPES:
-        raise HTTPException(status_code=400, detail="Only movies and episodes can be opened on the TV")
+        raise HTTPException(status_code=400, detail="Only movies, shows and episodes can be opened on the TV")
     dev = _tv_get(payload.tv)
     if not ADB_BIN:
         raise HTTPException(status_code=503, detail=(

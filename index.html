@@ -456,10 +456,7 @@
                         <div id="cast-target" class="text-[10px] font-mono text-slate-500 truncate"></div>
                         <input id="cast-search" type="search" placeholder="Search movies and shows..." autocomplete="off"
                                class="w-full rounded-lg bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500">
-                        <div class="flex items-center gap-2 min-h-[1.5rem]">
-                            <button id="cast-back" type="button" class="tv-btn px-2 hidden" style="min-height:1.5rem" data-cast-back>&larr; Back</button>
-                            <div id="cast-heading" class="text-[10px] font-mono uppercase tracking-wide text-slate-500 truncate">Latest additions</div>
-                        </div>
+                        <div id="cast-heading" class="text-[10px] font-mono uppercase tracking-wide text-slate-500 truncate min-h-[1.5rem] flex items-center">Latest additions</div>
                         <div id="cast-msg" class="hidden text-[11px] font-mono break-words"></div>
                         <div id="cast-list" class="space-y-2 max-h-[26rem] overflow-y-auto pr-1">
                             <div class="text-xs text-slate-500 py-2">Loading...</div>
@@ -1885,10 +1882,10 @@ async function updatePiholeData() {
         }
 
         // --- Open on TV: browse Jellyfin here, open the title's page in Wholphin on the TV ---
-        // Wholphin can't be told to start playback remotely, so this stops at the details page and
-        // Play is pressed on the TV (or with the remote widget). Each row has an explicit Open
+        // Wholphin can't be told to start playback remotely, so this stops at the title's page (a movie's,
+        // or a show's) and Play is pressed on the TV (or with the remote widget). Each row has an explicit Open
         // button rather than a tappable row, so scrolling a list on a phone can't change the TV.
-        let castSeries = null, castBusy = false, castSeq = 0, castMsgTimer = null, castSearchTimer = null;
+        let castBusy = false, castSeq = 0, castMsgTimer = null, castSearchTimer = null;
 
         function showCastMessage(text, isError, sticky) {
             const el = document.getElementById('cast-msg');
@@ -1900,16 +1897,14 @@ async function updatePiholeData() {
         }
 
         function castRowHtml(it) {
-            const isSeries = it.type === 'Series';
             const meta = [it.subtitle, it.minutes ? `${it.minutes} min` : ''].filter(Boolean).join(' \u00b7 ');
-            const attr = isSeries ? 'data-cast-series' : 'data-cast-play';
             return `<div class="flex items-center gap-3 p-2 rounded-lg bg-slate-900/40 border border-slate-700/40">
                 <img class="cast-poster w-10 h-14 rounded object-cover bg-slate-800 shrink-0" loading="lazy" alt="" src="/api/jellyfin/poster/${escapeHtml(it.id)}">
                 <div class="min-w-0 flex-1">
                     <div class="text-sm text-slate-200 truncate">${escapeHtml(it.name)}</div>
                     <div class="text-[10px] font-mono text-slate-500 truncate">${escapeHtml(meta)}</div>
                 </div>
-                <button type="button" class="tv-btn px-3 shrink-0" ${attr}="${escapeHtml(it.id)}" data-cast-name="${escapeHtml(it.name)}">${isSeries ? 'Episodes' : 'Open'}</button>
+                <button type="button" class="tv-btn px-3 shrink-0" data-cast-play="${escapeHtml(it.id)}" data-cast-name="${escapeHtml(it.name)}">Open</button>
             </div>`;
         }
 
@@ -1918,10 +1913,8 @@ async function updatePiholeData() {
             if (!list) return;
             const q = document.getElementById('cast-search').value.trim();
             const params = new URLSearchParams();
-            if (castSeries) params.set('series', castSeries.id); else if (q) params.set('q', q);
-            document.getElementById('cast-heading').textContent =
-                castSeries ? castSeries.name : (q ? `Results for "${q}"` : 'Latest additions');
-            document.getElementById('cast-back').classList.toggle('hidden', !castSeries);
+            if (q) params.set('q', q);
+            document.getElementById('cast-heading').textContent = q ? `Results for "${q}"` : 'Latest additions';
             const seq = ++castSeq;   // ignore answers that arrive after a newer search was started
             try {
                 const res = await fetch('/api/tv/library?' + params.toString());
@@ -1966,16 +1959,12 @@ async function updatePiholeData() {
             const input = document.getElementById('cast-search');
             if (!input) return;
             input.addEventListener('input', () => {
-                castSeries = null;
                 clearTimeout(castSearchTimer);
                 castSearchTimer = setTimeout(loadCastLibrary, 350);
             });
             document.addEventListener('click', (e) => {
                 const play = e.target.closest('[data-cast-play]');
-                if (play) { castPlay(play.dataset.castPlay, play.dataset.castName || 'item', play); return; }
-                const series = e.target.closest('[data-cast-series]');
-                if (series) { castSeries = { id: series.dataset.castSeries, name: series.dataset.castName || 'Series' }; loadCastLibrary(); return; }
-                if (e.target.closest('[data-cast-back]')) { castSeries = null; loadCastLibrary(); }
+                if (play) castPlay(play.dataset.castPlay, play.dataset.castName || 'item', play);
             });
             // Posters that don't exist come back 404; hide the broken-image icon.
             document.addEventListener('error', (e) => {
