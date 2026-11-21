@@ -1041,7 +1041,17 @@ async function toggleServiceState(service, action) {
                                 healthBadge = `<span class="text-[9px] px-1 bg-slate-700/50 text-slate-400 border border-slate-600/30 rounded font-sans font-semibold">SMART: N/A</span>`;
                             }
 
-                            const wearIndicator = smart.life != null ? `<span class="text-blue-400">Life: ${smart.life}%</span>` : '<span class="text-slate-500">Life: --</span>';
+                            // SSDs report remaining life %; spinning disks report bad-sector counts instead.
+                            let wearIndicator;
+                            if (smart.life != null) {
+                                wearIndicator = `<span class="text-blue-400">Life: ${smart.life}%</span>`;
+                            } else if (smart.bad_sectors != null) {
+                                wearIndicator = smart.bad_sectors === 0
+                                    ? `<span class="text-emerald-400" title="Reallocated + pending + uncorrectable sectors">0 bad sectors</span>`
+                                    : `<span class="text-amber-400" title="Reallocated + pending + uncorrectable sectors">${smart.bad_sectors} bad sector${smart.bad_sectors === 1 ? '' : 's'}</span>`;
+                            } else {
+                                wearIndicator = '<span class="text-slate-500">Life: --</span>';
+                            }
                             const driveTempIndicator = smart.temperature != null ? `<span class="text-amber-500">${smart.temperature}°C</span>` : '<span class="text-slate-500">--°C</span>';
 
                             const safeMount = escapeHtml(mount);

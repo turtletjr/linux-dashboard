@@ -700,7 +700,7 @@ def lookup_smart(base_drive: str) -> Dict[str, Any]:
     """Find cached SMART data for a whole-disk device. smartctl names NVMe
     devices by controller (/dev/nvme0) while /proc/mounts and sysfs use the
     namespace (/dev/nvme0n1), so try both."""
-    empty = {"healthy": None, "temperature": None, "life": None}
+    empty = {"healthy": None, "temperature": None, "life": None, "bad_sectors": None}
     if base_drive in disk_smart_cache:
         return disk_smart_cache[base_drive]
     m = re.match(r"^(/dev/nvme\d+)n\d+$", base_drive)
@@ -1093,15 +1093,24 @@ SMART_LIFE_ATTR_NAMES = (
 # awake forever. A skipped drive keeps its last known SMART values.
 SMART_SKIP_STANDBY = True
 
+# Spinning disks have no "life remaining" attribute. The usual health signal for
+# them is the raw count of sectors that have gone (or are going) bad:
+#   5   Reallocated_Sector_Ct   - sectors already remapped to spares
+#   197 Current_Pending_Sector  - unstable sectors waiting to be remapped
+#   198 Offline_Uncorrectable   - sectors that failed an offline scan
+SMART_BAD_SECTOR_ATTR_IDS = (5, 197, 198)
+
 def parse_smart_json(drive_info: Dict[str, Any]) -> Dict[str, Any]:
-    """Turn smartctl's JSON into {healthy, temperature, life}. Any field the
-    drive doesn't report stays None (shown as N/A / -- in the UI) rather than
-    defaulting to a made-up good value."""
+    """Turn smartctl's JSON into {healthy, temperature, life, bad_sectors}. Any
+    field the drive doesn't report stays None (shown as N/A / -- in the UI)
+    rather than defaulting to a made-up good value. `life` is SSD wear;
+    `bad_sectors` is the HDD equivalent (None for drives that don't report it)."""
     status = drive_info.get("smart_status")
     healthy = status.get("passed") if isinstance(status, dict) else None
 
     temp = (drive_info.get("temperature") or {}).get("current")
     life = None
+    bad_sectors = None
 
     nvme_log = drive_info.get("nvme_smart_health_information_log")
     if nvme_log:
@@ -1124,9 +1133,14 @@ def parse_smart_json(drive_info: Dict[str, Any]) -> Dict[str, Any]:
                     if attr.get("id") == life_id:
                         life = attr.get("value")
                         break
+        for attr in attr_table:
+            if attr.get("id") in SMART_BAD_SECTOR_ATTR_IDS:
+                raw = (attr.get("raw") or {}).get("value")
+                if isinstance(raw, (int, float)):
+                    bad_sectors = (bad_sectors or 0) + int(raw)
     if isinstance(life, (int, float)):
         life = max(0, min(100, life))
-    return {"healthy": healthy, "temperature": temp, "life": life}
+    return {"healthy": healthy, "temperature": temp, "life": life, "bad_sectors": bad_sectors}
 
 async def run_smartctl(dev: str, dtype: str = None):
     args = ["sudo", "-n", "smartctl", "-j", "-a"]
