@@ -40,7 +40,7 @@ APPS = {
 
 def make_remote(host: str) -> AndroidTVRemote:
     os.makedirs(CERT_DIR, mode=0o700, exist_ok=True)
-    return AndroidTVRemote("GreenPlanet Dashboard", CERT_FILE, KEY_FILE, host)
+    return AndroidTVRemote(f'{os.environ.get("DASHBOARD_NAME", "").strip() or "Server"} Dashboard', CERT_FILE, KEY_FILE, host)
 
 
 async def pair(host: str) -> None:

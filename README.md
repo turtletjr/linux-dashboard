@@ -1,4 +1,4 @@
-# GreenPlanet Dashboard
+# Linux Server Dashboard
 
 A self-hosted homelab dashboard for a single Linux server. FastAPI backend,
 a single-page dark-themed frontend (Tailwind + Chart.js), live system
@@ -33,11 +33,11 @@ common homelab services.
 
 ## What it does
 
-The dashboard is one page, split into three columns:
+The dashboard is one page: a health banner (it appears only when Sonarr or Prowlarr
+report a problem), three columns, and a full-width Media section underneath.
 
-- **Left** — hardware power controls, OS package updates, a live list of
-  monitored systemd services, Pi-hole stats/controls, Pi-hole's own
-  update checker.
+- **Left (system)** — hardware power controls, OS package updates, a live list
+  of monitored systemd services.
 - **Center** — CPU/RAM history chart, network + disk I/O history chart,
   per-core CPU + RAM + per-drive usage (used/free/total, whole-disk size,
   SMART health/temperature/life remaining, an Unmount button for
@@ -46,12 +46,16 @@ The dashboard is one page, split into three columns:
   monitor that flags processes hogging CPU or stuck in an uninterruptible
   (`D`) state, plus a media integrity checker that scans the media library
   for blank, truncated or corrupt video files on demand.
-- **Right** — active Jellyfin streams with playback controls, a virtual
-  remote for a Google TV / Android TV, public IP,
-  WireGuard + Tailscale tunnel status, qBittorrent transfer stats, an Add Show
-  search for Sonarr, Sonarr's download queue with live qBittorrent progress, and
-  Sonarr's upcoming episodes. A health banner above everything appears when
-  Sonarr or Prowlarr report a problem.
+- **Right (network)** — Pi-hole stats/controls, Pi-hole's own update checker,
+  public IP, WireGuard + Tailscale tunnel status.
+- **Media** (three columns across the full width) — active Jellyfin streams
+  with playback controls, a virtual remote for a Google TV / Android TV, Open
+  on TV; Add Show (search and add to Sonarr) and Sonarr's upcoming episodes;
+  qBittorrent transfer stats and Sonarr's download queue with live qBittorrent
+  progress.
+
+On a phone the columns and the Media section dissolve into one list, with the
+most-used widgets first. Every widget can be minimized.
 
 Everything refreshes itself every 2–10 seconds depending on the widget — no
 manual refresh needed.
@@ -148,6 +152,7 @@ the real `.env`, it's already covered by `.gitignore`).
 
 | Variable | Default | Required for |
 |---|---|---|
+| `DASHBOARD_NAME` | `Server` | Optional — the name in the page title and heading (`GreenPlanet` shows as "GreenPlanet Dashboard"), and the name the TV Remote shows on the TV when pairing |
 | `DASHBOARD_USERNAME` | *(empty)* | Logging into the dashboard at all — see [Security](#security) |
 | `DASHBOARD_PASSWORD` | *(empty)* | same |
 | `JELLYFIN_URL` | `http://192.168.1.10:8096` | Active Streams widget, subtitle toggle |

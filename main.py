@@ -2,6 +2,7 @@ import asyncio
 import collections
 import contextlib
 import datetime
+import html
 import json
 import os
 import secrets
@@ -13,7 +14,7 @@ import traceback
 from typing import Dict, Any, List, Literal, Optional
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import httpx
@@ -22,6 +23,11 @@ import re
 import ipaddress
 
 load_dotenv()  # reads .env in the working directory, if present
+
+# --- Dashboard name ---
+# Shown in the page title and heading ("<name> Dashboard") and as the TV Remote's name on the TV.
+# Set DASHBOARD_NAME in .env; whitespace is tidied and it is capped so a typo can't wreck the header.
+DASHBOARD_NAME = " ".join(os.environ.get("DASHBOARD_NAME", "").split())[:40] or "Server"
 
 # --- Auth ---
 # Every route in this app is gated behind HTTP Basic Auth (see the
@@ -60,7 +66,7 @@ def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)) ->
         )
     return credentials.username
 
-app = FastAPI(title="GreenPlanet Server Engine", dependencies=[Depends(verify_credentials)])
+app = FastAPI(title=f"{DASHBOARD_NAME} Server Engine", dependencies=[Depends(verify_credentials)])
 
 # No CORS middleware: the frontend is served by this same app (same origin),
 # so cross-origin access isn't needed. This matters more than usual here
@@ -370,11 +376,13 @@ class WindscribeSwitchRequest(BaseModel):
 
 @app.get("/")
 async def serve_dashboard_frontend():
-    html_path = os.path.join(os.path.dirname(__file__), "index.html")
-    if os.path.exists(html_path):
-        return FileResponse(html_path)
-    if os.path.exists("index.html"):
-        return FileResponse("index.html")
+    # index.html is read on every request (as before, edits show up without a restart) and the
+    # {{DASHBOARD_NAME}} placeholders are filled in, HTML-escaped.
+    for html_path in (os.path.join(os.path.dirname(__file__), "index.html"), "index.html"):
+        if os.path.exists(html_path):
+            with open(html_path, encoding="utf-8") as f:
+                page = f.read().replace("{{DASHBOARD_NAME}}", html.escape(DASHBOARD_NAME))
+            return HTMLResponse(page)
     raise HTTPException(status_code=404, detail="index.html file not found.")
 
 # --- LIVE SYSTEM UTILITIES ---
@@ -2252,7 +2260,7 @@ except ImportError:                      # optional dependency
 
 TV_IP = os.environ.get("TV_IP", "").strip()
 TV_CERT_DIR = os.path.expanduser(os.environ.get("TV_CERT_DIR", "~/.config/dashboard-tv"))
-TV_CLIENT_NAME = "GreenPlanet Dashboard"
+TV_CLIENT_NAME = f"{DASHBOARD_NAME} Dashboard"
 TV_STORE = os.path.join(TV_CERT_DIR, "tvs.json")
 TV_MAX = 12
 # Only these key names can be sent. The API never forwards arbitrary strings to the TV.

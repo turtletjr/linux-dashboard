@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Server Dashboard</title>
+    <title>{{DASHBOARD_NAME}} Dashboard</title>
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.3/dist/index.global.js"></script>
     <script src="https://unpkg.com/lucide@1.47.0/dist/umd/lucide.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js"></script>
@@ -79,7 +79,7 @@
         
         <header class="mb-4 sm:mb-8 border-b border-slate-700 pb-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 sm:gap-4">
             <h1 class="text-xl sm:text-2xl font-bold tracking-tight text-emerald-400 flex items-center gap-3 shrink-0">
-                <i data-lucide="server" class="w-6 h-6 sm:w-7 sm:h-7"></i> GreenPlanet Dashboard
+                <i data-lucide="server" class="w-6 h-6 sm:w-7 sm:h-7"></i> {{DASHBOARD_NAME}} Dashboard
             </h1>
 
             <div class="flex flex-wrap gap-2.5 items-center w-full sm:w-auto sm:justify-end text-xs font-mono">
@@ -99,7 +99,7 @@
         <!-- Main Body: 25% | 50% | 25% -->
         <div class="grid grid-cols-1 lg:grid-cols-4 gap-4 lg:gap-6 mb-6">
             
-            <!-- Left Column: 25% -->
+            <!-- Left Column: 25% (system) -->
             <div class="contents lg:flex lg:flex-col lg:col-span-1 lg:gap-6">
             <!-- Hardware Controls Widget -->
             <div class="widget-card justify-between min-h-[160px]">
@@ -115,6 +115,7 @@
                     </button>
                 </div>
             </div>
+
             <!-- Package Manager Widget -->
             <div class="widget-card justify-between min-h-[160px]">
                 <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-2">
@@ -173,69 +174,14 @@
                 </div>
                 <div class="text-[10px] font-mono text-slate-500 text-right mt-2">Last scan: <span id="last-checked">Never</span></div>
             </div>
-                <!-- Core Services Daemon Widget -->
-                <div class="widget-card">
-                    <h2 class="text-xs font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-1.5">
-                        <span class="w-1.5 h-1.5 bg-emerald-400 rounded-full"></span> Core Services Daemon
-                    </h2>
-                    <div id="primary-services-box" class="space-y-1.5 max-h-[22rem] overflow-y-auto pr-1"></div>
-                </div>
 
-                <!-- Network Protection (Pi-hole) Widget -->
-                <div class="widget-card">
-                    <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-4 flex items-center gap-2">
-                        <i data-lucide="shield" class="w-4 h-4 text-sky-400"></i> Network Protection
-                    </h2>
-                    <div class="grid grid-cols-2 gap-3 font-mono">
-                        <div class="bg-slate-900/40 p-3 rounded-lg border border-slate-700/40">
-                            <div class="text-[10px] text-slate-400 font-sans">Queries (Today)</div>
-                            <div id="pi-queries" class="text-sm font-bold text-slate-200 mt-1">--</div>
-                        </div>
-                        <div class="bg-slate-900/40 p-3 rounded-lg border border-slate-700/40">
-                            <div class="text-[10px] text-slate-400 font-sans">Blocked (Today)</div>
-                            <div id="pi-blocked" class="text-sm font-bold text-rose-400 mt-1">--</div>
-                        </div>
-                        <div class="bg-slate-900/40 p-3 rounded-lg border border-slate-700/40 col-span-2 flex justify-between items-center">
-                            <div>
-                                <div class="text-[10px] text-slate-400 font-sans">Block Percentage</div>
-                                <div id="pi-percent" class="text-sm font-bold text-sky-400 mt-0.5">--</div>
-                            </div>
-                            <div id="pi-status-badge" class="text-[10px] px-2 py-0.5 font-sans font-semibold rounded bg-slate-700 text-slate-400">Offline</div>
-                        </div>
-                    </div>
-
-                    <div class="mt-4 pt-3 border-t border-slate-700/40 flex items-center justify-between gap-2">
-                        <button onclick="controlPihole('enable')" class="flex-1 bg-emerald-600/10 hover:bg-emerald-600/30 border border-emerald-500/20 text-emerald-400 py-1.5 rounded-lg text-[10px] font-mono transition-colors cursor-pointer text-center">
-                            Enable
-                        </button>
-                        <button onclick="controlPihole('disable', 300)" class="flex-1 bg-amber-600/10 hover:bg-amber-600/30 border border-amber-500/20 text-amber-400 py-1.5 rounded-lg text-[10px] font-mono transition-colors cursor-pointer text-center">
-                            -5 Min
-                        </button>
-                        <button onclick="controlPihole('disable', 0)" class="flex-1 bg-rose-600/10 hover:bg-rose-600/30 border border-rose-500/20 text-rose-400 py-1.5 rounded-lg text-[10px] font-mono transition-colors cursor-pointer text-center">
-                            Disable
-                        </button>
-                    </div>
-
-                    <div class="mt-4 pt-3 border-t border-slate-700/40">
-                        <div class="text-[10px] uppercase font-mono tracking-wider text-slate-400 mb-2 flex items-center gap-1.5">
-                            <i data-lucide="ban" class="w-3 h-3 text-rose-400"></i> Heavy Ad Offenders
-                        </div>
-                        <div class="space-y-1.5 font-mono text-[11px]" id="pi-top-blocked-list">
-                            <div class="text-slate-500 italic text-[10px] py-1">Awaiting DNS interceptions...</div>
-                        </div>
-                    </div>
-                </div>
-				<!-- Pi-hole Update Widget -->
-                <div class="widget-card">
-                    <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-2">
-                        <i data-lucide="shield" class="w-4 h-4 text-emerald-400"></i> Pi-hole Updates
-                    </h2>
-                    <div id="pihole-updates-container" class="space-y-3">
-                        <div class="flex justify-center items-center bg-slate-900/50 p-3 rounded-lg border border-slate-700/50 text-sm">
-                            <span class="text-slate-400">Checking for updates...</span>
-                        </div>
-                    </div>
-                </div>
+            <!-- Core Services Daemon Widget -->
+            <div class="widget-card">
+                <h2 class="text-xs font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-1.5">
+                    <span class="w-1.5 h-1.5 bg-emerald-400 rounded-full"></span> Core Services Daemon
+                </h2>
+                <div id="primary-services-box" class="space-y-1.5 max-h-[22rem] overflow-y-auto pr-1"></div>
+            </div>
             </div>
 
             <!-- Center Column: 50% -->
@@ -359,260 +305,342 @@
                 </div>
             </div>
 
-            <!-- Right Column: 25% -->
+            <!-- Right Column: 25% (network) -->
             <div class="contents lg:flex lg:flex-col lg:col-span-1 lg:gap-6">
-            <!-- Active Streams (Jellyfin) Widget -->
-            <div class="widget-card justify-between min-h-[160px]">
-                <div class="flex items-center justify-between mb-3">
+            <!-- Network Protection (Pi-hole) Widget -->
+            <div class="widget-card">
+                <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-4 flex items-center gap-2">
+                    <i data-lucide="shield" class="w-4 h-4 text-sky-400"></i> Network Protection
+                </h2>
+                <div class="grid grid-cols-2 gap-3 font-mono">
+                    <div class="bg-slate-900/40 p-3 rounded-lg border border-slate-700/40">
+                        <div class="text-[10px] text-slate-400 font-sans">Queries (Today)</div>
+                        <div id="pi-queries" class="text-sm font-bold text-slate-200 mt-1">--</div>
+                    </div>
+                    <div class="bg-slate-900/40 p-3 rounded-lg border border-slate-700/40">
+                        <div class="text-[10px] text-slate-400 font-sans">Blocked (Today)</div>
+                        <div id="pi-blocked" class="text-sm font-bold text-rose-400 mt-1">--</div>
+                    </div>
+                    <div class="bg-slate-900/40 p-3 rounded-lg border border-slate-700/40 col-span-2 flex justify-between items-center">
+                        <div>
+                            <div class="text-[10px] text-slate-400 font-sans">Block Percentage</div>
+                            <div id="pi-percent" class="text-sm font-bold text-sky-400 mt-0.5">--</div>
+                        </div>
+                        <div id="pi-status-badge" class="text-[10px] px-2 py-0.5 font-sans font-semibold rounded bg-slate-700 text-slate-400">Offline</div>
+                    </div>
+                </div>
+
+                <div class="mt-4 pt-3 border-t border-slate-700/40 flex items-center justify-between gap-2">
+                    <button onclick="controlPihole('enable')" class="flex-1 bg-emerald-600/10 hover:bg-emerald-600/30 border border-emerald-500/20 text-emerald-400 py-1.5 rounded-lg text-[10px] font-mono transition-colors cursor-pointer text-center">
+                        Enable
+                    </button>
+                    <button onclick="controlPihole('disable', 300)" class="flex-1 bg-amber-600/10 hover:bg-amber-600/30 border border-amber-500/20 text-amber-400 py-1.5 rounded-lg text-[10px] font-mono transition-colors cursor-pointer text-center">
+                        -5 Min
+                    </button>
+                    <button onclick="controlPihole('disable', 0)" class="flex-1 bg-rose-600/10 hover:bg-rose-600/30 border border-rose-500/20 text-rose-400 py-1.5 rounded-lg text-[10px] font-mono transition-colors cursor-pointer text-center">
+                        Disable
+                    </button>
+                </div>
+
+                <div class="mt-4 pt-3 border-t border-slate-700/40">
+                    <div class="text-[10px] uppercase font-mono tracking-wider text-slate-400 mb-2 flex items-center gap-1.5">
+                        <i data-lucide="ban" class="w-3 h-3 text-rose-400"></i> Heavy Ad Offenders
+                    </div>
+                    <div class="space-y-1.5 font-mono text-[11px]" id="pi-top-blocked-list">
+                        <div class="text-slate-500 italic text-[10px] py-1">Awaiting DNS interceptions...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Pi-hole Update Widget -->
+            <div class="widget-card">
+                <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-2">
+                    <i data-lucide="shield" class="w-4 h-4 text-emerald-400"></i> Pi-hole Updates
+                </h2>
+                <div id="pihole-updates-container" class="space-y-3">
+                    <div class="flex justify-center items-center bg-slate-900/50 p-3 rounded-lg border border-slate-700/50 text-sm">
+                        <span class="text-slate-400">Checking for updates...</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Public IP Widget -->
+            <div class="widget-card">
+                <div class="flex justify-between items-center mb-3">
                     <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase flex items-center gap-2">
-                        <i data-lucide="play-circle" class="w-4 h-4 text-purple-400"></i> Active Streams
+                        <i data-lucide="globe" class="w-4 h-4 text-sky-400"></i> Public IP
+                    </h2>
+                    <button onclick="refreshPublicIp()" id="public-ip-refresh-btn" class="text-slate-400 hover:text-sky-400 transition-colors cursor-pointer" title="Refresh now">
+                        <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+                    </button>
+                </div>
+                <div class="bg-slate-900/50 p-3 rounded-lg border border-slate-700/50 flex justify-center items-center">
+                    <span id="public-ip-address" class="text-lg font-bold font-mono text-slate-200 tracking-wider">--.---.---.---</span>
+                </div>
+                <div class="text-[10px] font-mono text-slate-500 text-right mt-2">Checked: <span id="public-ip-checked-at">Never</span></div>
+            </div>
+
+            <!-- Tunnel Routing Topology Widget -->
+            <div class="widget-card">
+                <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-4 flex items-center gap-2">
+                    <i data-lucide="link" class="w-4 h-4 text-emerald-400"></i> Tunnel Routing Topology
+                </h2>
+                <div class="space-y-4 font-mono text-xs">
+                    <div class="border-b border-slate-700/50 pb-3">
+                        <div class="flex justify-between items-center mb-1.5">
+                            <span class="font-sans font-bold text-slate-300 text-[11px] flex items-center gap-1">
+                                <span class="w-1.5 h-1.5 rounded-full bg-slate-500" id="wg-dot"></span> Windscribe (windscribe)
+                            </span>
+                            <span id="wg-status-badge" class="text-[10px] px-1.5 py-0.5 rounded font-sans font-bold uppercase bg-slate-700 text-slate-400">Off</span>
+                        </div>
+                        <div class="grid grid-cols-1 gap-y-1 text-[11px] text-slate-400">
+                            <div>Handshake: <span id="wg-handshake" class="text-slate-200">--</span></div>
+                            <div class="truncate">Endpt: <span id="wg-endpoint" class="text-slate-200">--</span></div>
+                            <div class="flex justify-between mt-0.5">
+                                <span class="text-sky-400 flex items-center gap-0.5"><i data-lucide="arrow-down" class="w-3 h-3"></i> <span id="wg-rx">0 B</span></span>
+                                <span class="text-indigo-400 flex items-center gap-0.5"><i data-lucide="arrow-up" class="w-3 h-3"></i> <span id="wg-tx">0 B</span></span>
+                            </div>
+                        </div>
+                        <div class="mt-2.5 pt-2.5 border-t border-slate-800/60">
+                            <div class="text-[10px] text-slate-500 font-sans mb-1.5">Active location: <span id="wg-active-location" class="text-slate-300 font-semibold">--</span></div>
+                            <div class="flex gap-1.5">
+                                <select id="wg-location-select" class="flex-1 bg-slate-900 border border-slate-700 rounded-md text-[11px] text-slate-300 px-2 py-1.5 font-mono cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+                                    <option value="">Loading locations...</option>
+                                </select>
+                                <button onclick="switchWindscribeLocation()" id="wg-switch-btn" class="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-sans font-medium text-[10px] px-3 py-1.5 rounded-md transition-colors cursor-pointer whitespace-nowrap">
+                                    Switch
+                                </button>
+                            </div>
+                            <div id="wg-switch-result" class="text-[10px] font-mono mt-1.5 hidden"></div>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="flex justify-between items-center mb-1.5">
+                            <span class="font-sans font-bold text-slate-300 text-[11px] flex items-center gap-1">
+                                <span class="w-1.5 h-1.5 rounded-full bg-slate-500" id="ts-dot"></span> Tailscale Mesh
+                            </span>
+                            <span id="ts-status-badge" class="text-[10px] px-1.5 py-0.5 rounded font-sans font-bold uppercase bg-slate-700 text-slate-400">Off</span>
+                        </div>
+                        <div class="grid grid-cols-1 gap-y-1 text-[11px] text-slate-400">
+                            <div class="truncate">Node IP: <span id="ts-ip" class="text-slate-300">--</span></div>
+                            <div class="flex justify-between">
+                                <div>Peers: <span id="ts-peers" class="text-slate-200">0</span></div>
+                                <div><span id="ts-exit-status" class="text-slate-500">No Exit</span></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            </div>
+
+            <!-- Media section: full width on desktop, in three columns. On a phone every wrapper below dissolves
+                 ("contents") so the widgets stay siblings in the main grid and the mobile ordering still applies. -->
+            <div class="contents lg:block lg:col-span-4">
+                <div class="hidden lg:flex items-center gap-2 mt-2 mb-4 pt-5 border-t border-slate-700">
+                    <h2 class="text-sm font-semibold tracking-wide text-emerald-400 uppercase flex items-center gap-2">
+                        <i data-lucide="clapperboard" class="w-4 h-4"></i> Media
                     </h2>
                 </div>
-                <div id="jellyfin-activity-container" class="space-y-2 flex-1 overflow-y-auto max-h-[110px] pr-1"></div>
-                <div class="text-[10px] font-mono text-slate-500 text-right mt-2 border-t border-slate-700/40 pt-1">Server engine: <span id="jf-version">v--</span></div>
-            </div>
-				<!-- TV Remote Widget -->
-                <div class="widget-card">
-                    <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-2">
-                        <i data-lucide="tv" class="w-4 h-4 text-purple-400"></i> TV Remote
-                        <span id="tv-status-badge" class="ml-auto text-[10px] px-2 py-0.5 font-sans font-semibold rounded normal-case bg-slate-700 text-slate-400">Offline</span>
-                    </h2>
-                    <div class="space-y-3">
-                        <div class="space-y-2">
-                            <div class="flex items-center gap-2">
-                                <select id="tv-select" aria-label="Which TV"
-                                        class="min-w-0 flex-1 rounded-lg bg-slate-900/60 border border-slate-700 px-2 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-emerald-500"></select>
-                                <button id="tv-find-btn" type="button" class="tv-btn px-2 shrink-0" style="min-height:2rem" title="Find or add TVs" data-tv-find><i data-lucide="search"></i></button>
-                                <button id="tv-rename-btn" type="button" class="tv-btn px-2 shrink-0" style="min-height:2rem" title="Rename this TV" data-tv-rename><i data-lucide="pencil"></i></button>
-                                <button id="tv-remove-btn" type="button" class="tv-btn px-2 shrink-0" style="min-height:2rem" title="Remove this TV" data-tv-remove><i data-lucide="trash-2"></i></button>
-                            </div>
-                            <div id="tv-pair-panel" class="hidden rounded-lg bg-amber-500/5 border border-amber-500/20 p-2 space-y-2">
-                                <div id="tv-pair-text" class="text-[11px] text-amber-300"></div>
-                                <div id="tv-pair-start-row" class="hidden">
-                                    <button type="button" class="tv-btn px-3 w-full" style="min-height:2rem" data-tv-pair-start>Start pairing</button>
+                <div class="contents lg:grid lg:grid-cols-3 lg:gap-6 lg:items-start">
+                    <!-- Media column: watching -->
+                    <div class="contents lg:flex lg:flex-col lg:gap-6">
+                    <!-- Active Streams (Jellyfin) Widget -->
+                    <div class="widget-card justify-between min-h-[160px]">
+                        <div class="flex items-center justify-between mb-3">
+                            <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase flex items-center gap-2">
+                                <i data-lucide="play-circle" class="w-4 h-4 text-purple-400"></i> Active Streams
+                            </h2>
+                        </div>
+                        <div id="jellyfin-activity-container" class="space-y-2 flex-1 overflow-y-auto max-h-[110px] pr-1"></div>
+                        <div class="text-[10px] font-mono text-slate-500 text-right mt-2 border-t border-slate-700/40 pt-1">Server engine: <span id="jf-version">v--</span></div>
+                    </div>
+
+                    <!-- TV Remote Widget -->
+                    <div class="widget-card">
+                        <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-2">
+                            <i data-lucide="tv" class="w-4 h-4 text-purple-400"></i> TV Remote
+                            <span id="tv-status-badge" class="ml-auto text-[10px] px-2 py-0.5 font-sans font-semibold rounded normal-case bg-slate-700 text-slate-400">Offline</span>
+                        </h2>
+                        <div class="space-y-3">
+                            <div class="space-y-2">
+                                <div class="flex items-center gap-2">
+                                    <select id="tv-select" aria-label="Which TV"
+                                            class="min-w-0 flex-1 rounded-lg bg-slate-900/60 border border-slate-700 px-2 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-emerald-500"></select>
+                                    <button id="tv-find-btn" type="button" class="tv-btn px-2 shrink-0" style="min-height:2rem" title="Find or add TVs" data-tv-find><i data-lucide="search"></i></button>
+                                    <button id="tv-rename-btn" type="button" class="tv-btn px-2 shrink-0" style="min-height:2rem" title="Rename this TV" data-tv-rename><i data-lucide="pencil"></i></button>
+                                    <button id="tv-remove-btn" type="button" class="tv-btn px-2 shrink-0" style="min-height:2rem" title="Remove this TV" data-tv-remove><i data-lucide="trash-2"></i></button>
                                 </div>
-                                <div id="tv-pair-code-row" class="hidden">
+                                <div id="tv-pair-panel" class="hidden rounded-lg bg-amber-500/5 border border-amber-500/20 p-2 space-y-2">
+                                    <div id="tv-pair-text" class="text-[11px] text-amber-300"></div>
+                                    <div id="tv-pair-start-row" class="hidden">
+                                        <button type="button" class="tv-btn px-3 w-full" style="min-height:2rem" data-tv-pair-start>Start pairing</button>
+                                    </div>
+                                    <div id="tv-pair-code-row" class="hidden">
+                                        <div class="flex items-center gap-2">
+                                            <input id="tv-pair-code" type="text" maxlength="6" autocomplete="off" autocapitalize="characters" spellcheck="false"
+                                                   placeholder="Code on the TV" aria-label="Pairing code shown on the TV"
+                                                   class="min-w-0 flex-1 rounded-lg bg-slate-900/60 border border-slate-700 px-2 py-1.5 text-sm font-mono uppercase text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500">
+                                            <button type="button" class="tv-btn px-3 shrink-0" style="min-height:2rem" data-tv-pair-finish>Pair</button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div id="tv-find-panel" class="hidden rounded-lg bg-slate-900/40 border border-slate-700/50 p-2 space-y-2">
                                     <div class="flex items-center gap-2">
-                                        <input id="tv-pair-code" type="text" maxlength="6" autocomplete="off" autocapitalize="characters" spellcheck="false"
-                                               placeholder="Code on the TV" aria-label="Pairing code shown on the TV"
-                                               class="min-w-0 flex-1 rounded-lg bg-slate-900/60 border border-slate-700 px-2 py-1.5 text-sm font-mono uppercase text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500">
-                                        <button type="button" class="tv-btn px-3 shrink-0" style="min-height:2rem" data-tv-pair-finish>Pair</button>
+                                        <div class="text-[10px] font-mono uppercase tracking-wide text-slate-500 flex-1">Find TVs</div>
+                                        <button type="button" class="tv-btn px-2" style="min-height:1.5rem" data-tv-find>Search again</button>
+                                        <button type="button" class="tv-btn px-2" style="min-height:1.5rem" data-tv-find-close title="Close">&times;</button>
+                                    </div>
+                                    <div id="tv-find-status" class="text-[11px] font-mono text-slate-400"></div>
+                                    <div id="tv-find-list" class="space-y-2 max-h-56 overflow-y-auto pr-1"></div>
+                                    <div class="flex items-center gap-2 border-t border-slate-700/40 pt-2">
+                                        <input id="tv-add-ip" type="text" inputmode="decimal" autocomplete="off" placeholder="Or enter an IP address" aria-label="TV IP address"
+                                               class="min-w-0 flex-1 rounded-lg bg-slate-900/60 border border-slate-700 px-2 py-1.5 text-sm font-mono text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500">
+                                        <button type="button" class="tv-btn px-3 shrink-0" style="min-height:2rem" data-tv-add-manual>Add</button>
                                     </div>
                                 </div>
                             </div>
-                            <div id="tv-find-panel" class="hidden rounded-lg bg-slate-900/40 border border-slate-700/50 p-2 space-y-2">
-                                <div class="flex items-center gap-2">
-                                    <div class="text-[10px] font-mono uppercase tracking-wide text-slate-500 flex-1">Find TVs</div>
-                                    <button type="button" class="tv-btn px-2" style="min-height:1.5rem" data-tv-find>Search again</button>
-                                    <button type="button" class="tv-btn px-2" style="min-height:1.5rem" data-tv-find-close title="Close">&times;</button>
-                                </div>
-                                <div id="tv-find-status" class="text-[11px] font-mono text-slate-400"></div>
-                                <div id="tv-find-list" class="space-y-2 max-h-56 overflow-y-auto pr-1"></div>
-                                <div class="flex items-center gap-2 border-t border-slate-700/40 pt-2">
-                                    <input id="tv-add-ip" type="text" inputmode="decimal" autocomplete="off" placeholder="Or enter an IP address" aria-label="TV IP address"
-                                           class="min-w-0 flex-1 rounded-lg bg-slate-900/60 border border-slate-700 px-2 py-1.5 text-sm font-mono text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500">
-                                    <button type="button" class="tv-btn px-3 shrink-0" style="min-height:2rem" data-tv-add-manual>Add</button>
-                                </div>
+                            <div class="grid grid-cols-4 gap-2">
+                                <button type="button" class="tv-btn" data-tv-key="BACK" title="Back">Back</button>
+                                <button type="button" class="tv-btn" data-tv-key="HOME" title="Home">Home</button>
+                                <button type="button" class="tv-btn" data-tv-key="MENU" title="Menu">Menu</button>
+                                <button type="button" class="tv-btn tv-btn-power" data-tv-key="POWER" title="Power (on / standby)"><i data-lucide="power"></i></button>
                             </div>
-                        </div>
-                        <div class="grid grid-cols-4 gap-2">
-                            <button type="button" class="tv-btn" data-tv-key="BACK" title="Back">Back</button>
-                            <button type="button" class="tv-btn" data-tv-key="HOME" title="Home">Home</button>
-                            <button type="button" class="tv-btn" data-tv-key="MENU" title="Menu">Menu</button>
-                            <button type="button" class="tv-btn tv-btn-power" data-tv-key="POWER" title="Power (on / standby)"><i data-lucide="power"></i></button>
-                        </div>
-                        <div class="grid grid-cols-3 gap-2 max-w-[14rem] mx-auto">
-                            <span></span>
-                            <button type="button" class="tv-btn" data-tv-key="DPAD_UP" title="Up"><i data-lucide="chevron-up"></i></button>
-                            <span></span>
-                            <button type="button" class="tv-btn" data-tv-key="DPAD_LEFT" title="Left"><i data-lucide="chevron-left"></i></button>
-                            <button type="button" class="tv-btn tv-btn-ok" data-tv-key="DPAD_CENTER" title="Select">OK</button>
-                            <button type="button" class="tv-btn" data-tv-key="DPAD_RIGHT" title="Right"><i data-lucide="chevron-right"></i></button>
-                            <span></span>
-                            <button type="button" class="tv-btn" data-tv-key="DPAD_DOWN" title="Down"><i data-lucide="chevron-down"></i></button>
-                            <span></span>
-                        </div>
-                        <div class="grid grid-cols-3 gap-2">
-                            <button type="button" class="tv-btn" data-tv-key="VOLUME_DOWN" title="Volume down">Vol &minus;</button>
-                            <button type="button" class="tv-btn" data-tv-key="MUTE" title="Mute">Mute</button>
-                            <button type="button" class="tv-btn" data-tv-key="VOLUME_UP" title="Volume up">Vol +</button>
-                        </div>
-                        <div class="grid grid-cols-5 gap-2">
-                            <button type="button" class="tv-btn" data-tv-key="MEDIA_PREVIOUS" title="Previous"><i data-lucide="skip-back"></i></button>
-                            <button type="button" class="tv-btn" data-tv-key="MEDIA_REWIND" title="Rewind"><i data-lucide="rewind"></i></button>
-                            <button type="button" class="tv-btn" data-tv-key="MEDIA_PLAY_PAUSE" title="Play / pause"><i data-lucide="play"></i><i data-lucide="pause"></i></button>
-                            <button type="button" class="tv-btn" data-tv-key="MEDIA_FAST_FORWARD" title="Fast forward"><i data-lucide="fast-forward"></i></button>
-                            <button type="button" class="tv-btn" data-tv-key="MEDIA_NEXT" title="Next"><i data-lucide="skip-forward"></i></button>
-                        </div>
-                        <div id="tv-apps" class="flex flex-wrap gap-2"></div>
-                        <div id="tv-msg" class="hidden text-[10px] font-mono"></div>
-                        <div id="tv-now" class="text-[10px] font-mono text-slate-500 truncate border-t border-slate-700/40 pt-1.5"></div>
-                    </div>
-                </div>
-                <!-- Open on TV Widget -->
-                <div class="widget-card">
-                    <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-2">
-                        <i data-lucide="monitor-play" class="w-4 h-4 text-purple-400"></i> Open on TV
-                    </h2>
-                    <div class="space-y-2">
-                        <div id="cast-target" class="text-[10px] font-mono text-slate-500 truncate"></div>
-                        <input id="cast-search" type="search" placeholder="Search movies and shows..." autocomplete="off"
-                               class="w-full rounded-lg bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500">
-                        <div id="cast-heading" class="text-[10px] font-mono uppercase tracking-wide text-slate-500 truncate min-h-[1.5rem] flex items-center">Latest additions</div>
-                        <div id="cast-msg" class="hidden text-[11px] font-mono break-words"></div>
-                        <div id="cast-list" class="space-y-2 max-h-[26rem] overflow-y-auto pr-1">
-                            <div class="text-xs text-slate-500 py-2">Loading...</div>
+                            <div class="grid grid-cols-3 gap-2 max-w-[14rem] mx-auto">
+                                <span></span>
+                                <button type="button" class="tv-btn" data-tv-key="DPAD_UP" title="Up"><i data-lucide="chevron-up"></i></button>
+                                <span></span>
+                                <button type="button" class="tv-btn" data-tv-key="DPAD_LEFT" title="Left"><i data-lucide="chevron-left"></i></button>
+                                <button type="button" class="tv-btn tv-btn-ok" data-tv-key="DPAD_CENTER" title="Select">OK</button>
+                                <button type="button" class="tv-btn" data-tv-key="DPAD_RIGHT" title="Right"><i data-lucide="chevron-right"></i></button>
+                                <span></span>
+                                <button type="button" class="tv-btn" data-tv-key="DPAD_DOWN" title="Down"><i data-lucide="chevron-down"></i></button>
+                                <span></span>
+                            </div>
+                            <div class="grid grid-cols-3 gap-2">
+                                <button type="button" class="tv-btn" data-tv-key="VOLUME_DOWN" title="Volume down">Vol &minus;</button>
+                                <button type="button" class="tv-btn" data-tv-key="MUTE" title="Mute">Mute</button>
+                                <button type="button" class="tv-btn" data-tv-key="VOLUME_UP" title="Volume up">Vol +</button>
+                            </div>
+                            <div class="grid grid-cols-5 gap-2">
+                                <button type="button" class="tv-btn" data-tv-key="MEDIA_PREVIOUS" title="Previous"><i data-lucide="skip-back"></i></button>
+                                <button type="button" class="tv-btn" data-tv-key="MEDIA_REWIND" title="Rewind"><i data-lucide="rewind"></i></button>
+                                <button type="button" class="tv-btn" data-tv-key="MEDIA_PLAY_PAUSE" title="Play / pause"><i data-lucide="play"></i><i data-lucide="pause"></i></button>
+                                <button type="button" class="tv-btn" data-tv-key="MEDIA_FAST_FORWARD" title="Fast forward"><i data-lucide="fast-forward"></i></button>
+                                <button type="button" class="tv-btn" data-tv-key="MEDIA_NEXT" title="Next"><i data-lucide="skip-forward"></i></button>
+                            </div>
+                            <div id="tv-apps" class="flex flex-wrap gap-2"></div>
+                            <div id="tv-msg" class="hidden text-[10px] font-mono"></div>
+                            <div id="tv-now" class="text-[10px] font-mono text-slate-500 truncate border-t border-slate-700/40 pt-1.5"></div>
                         </div>
                     </div>
-                </div>
-                <!-- Add Show (Sonarr) Widget -->
-                <div class="widget-card">
-                    <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-2">
-                        <i data-lucide="tv" class="w-4 h-4 text-sky-400"></i> Add Show
-                    </h2>
-                    <div class="space-y-2">
-                        <input id="sn-search" type="search" placeholder="Search for a show to add to Sonarr..." autocomplete="off"
-                               class="w-full rounded-lg bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500">
-                        <div class="grid grid-cols-2 gap-2">
-                            <select id="sn-root" aria-label="Root folder" title="Where the show is stored"
-                                    class="min-w-0 rounded-lg bg-slate-900/60 border border-slate-700 px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"></select>
-                            <select id="sn-profile" aria-label="Quality profile" title="Quality profile"
-                                    class="min-w-0 rounded-lg bg-slate-900/60 border border-slate-700 px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"></select>
-                            <select id="sn-monitor" aria-label="Which episodes to monitor" title="Which episodes to monitor"
-                                    class="min-w-0 rounded-lg bg-slate-900/60 border border-slate-700 px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500">
-                                <option value="all">Monitor: all episodes</option>
-                                <option value="future">Monitor: future episodes</option>
-                                <option value="missing">Monitor: missing episodes</option>
-                                <option value="firstSeason">Monitor: first season</option>
-                                <option value="pilot">Monitor: pilot only</option>
-                                <option value="none">Monitor: none</option>
-                            </select>
-                            <label class="flex items-center gap-2 text-xs text-slate-300 px-1 cursor-pointer">
-                                <input id="sn-now" type="checkbox" checked class="accent-emerald-500"> Search right away
-                            </label>
-                        </div>
-                        <div id="sn-msg" class="hidden text-[11px] font-mono break-words"></div>
-                        <div id="sn-list" class="space-y-2 max-h-[26rem] overflow-y-auto pr-1">
-                            <div class="text-xs text-slate-500 py-2">Type a show name to search</div>
-                        </div>
-                    </div>
-                </div>
-                <!-- Public IP Widget -->
-                <div class="widget-card">
-                    <div class="flex justify-between items-center mb-3">
-                        <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase flex items-center gap-2">
-                            <i data-lucide="globe" class="w-4 h-4 text-sky-400"></i> Public IP
+
+                    <!-- Open on TV Widget -->
+                    <div class="widget-card">
+                        <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-2">
+                            <i data-lucide="monitor-play" class="w-4 h-4 text-purple-400"></i> Open on TV
                         </h2>
-                        <button onclick="refreshPublicIp()" id="public-ip-refresh-btn" class="text-slate-400 hover:text-sky-400 transition-colors cursor-pointer" title="Refresh now">
-                            <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
-                        </button>
-                    </div>
-                    <div class="bg-slate-900/50 p-3 rounded-lg border border-slate-700/50 flex justify-center items-center">
-                        <span id="public-ip-address" class="text-lg font-bold font-mono text-slate-200 tracking-wider">--.---.---.---</span>
-                    </div>
-                    <div class="text-[10px] font-mono text-slate-500 text-right mt-2">Checked: <span id="public-ip-checked-at">Never</span></div>
-                </div>
-                <!-- Tunnel Routing Topology Widget -->
-                <div class="widget-card">
-                    <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-4 flex items-center gap-2">
-                        <i data-lucide="link" class="w-4 h-4 text-emerald-400"></i> Tunnel Routing Topology
-                    </h2>
-                    <div class="space-y-4 font-mono text-xs">
-                        <div class="border-b border-slate-700/50 pb-3">
-                            <div class="flex justify-between items-center mb-1.5">
-                                <span class="font-sans font-bold text-slate-300 text-[11px] flex items-center gap-1">
-                                    <span class="w-1.5 h-1.5 rounded-full bg-slate-500" id="wg-dot"></span> Windscribe (windscribe)
-                                </span>
-                                <span id="wg-status-badge" class="text-[10px] px-1.5 py-0.5 rounded font-sans font-bold uppercase bg-slate-700 text-slate-400">Off</span>
-                            </div>
-                            <div class="grid grid-cols-1 gap-y-1 text-[11px] text-slate-400">
-                                <div>Handshake: <span id="wg-handshake" class="text-slate-200">--</span></div>
-                                <div class="truncate">Endpt: <span id="wg-endpoint" class="text-slate-200">--</span></div>
-                                <div class="flex justify-between mt-0.5">
-                                    <span class="text-sky-400 flex items-center gap-0.5"><i data-lucide="arrow-down" class="w-3 h-3"></i> <span id="wg-rx">0 B</span></span>
-                                    <span class="text-indigo-400 flex items-center gap-0.5"><i data-lucide="arrow-up" class="w-3 h-3"></i> <span id="wg-tx">0 B</span></span>
-                                </div>
-                            </div>
-                            <div class="mt-2.5 pt-2.5 border-t border-slate-800/60">
-                                <div class="text-[10px] text-slate-500 font-sans mb-1.5">Active location: <span id="wg-active-location" class="text-slate-300 font-semibold">--</span></div>
-                                <div class="flex gap-1.5">
-                                    <select id="wg-location-select" class="flex-1 bg-slate-900 border border-slate-700 rounded-md text-[11px] text-slate-300 px-2 py-1.5 font-mono cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
-                                        <option value="">Loading locations...</option>
-                                    </select>
-                                    <button onclick="switchWindscribeLocation()" id="wg-switch-btn" class="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-sans font-medium text-[10px] px-3 py-1.5 rounded-md transition-colors cursor-pointer whitespace-nowrap">
-                                        Switch
-                                    </button>
-                                </div>
-                                <div id="wg-switch-result" class="text-[10px] font-mono mt-1.5 hidden"></div>
-                            </div>
-                        </div>
-                        <div>
-                            <div class="flex justify-between items-center mb-1.5">
-                                <span class="font-sans font-bold text-slate-300 text-[11px] flex items-center gap-1">
-                                    <span class="w-1.5 h-1.5 rounded-full bg-slate-500" id="ts-dot"></span> Tailscale Mesh
-                                </span>
-                                <span id="ts-status-badge" class="text-[10px] px-1.5 py-0.5 rounded font-sans font-bold uppercase bg-slate-700 text-slate-400">Off</span>
-                            </div>
-                            <div class="grid grid-cols-1 gap-y-1 text-[11px] text-slate-400">
-                                <div class="truncate">Node IP: <span id="ts-ip" class="text-slate-300">--</span></div>
-                                <div class="flex justify-between">
-                                    <div>Peers: <span id="ts-peers" class="text-slate-200">0</span></div>
-                                    <div><span id="ts-exit-status" class="text-slate-500">No Exit</span></div>
-                                </div>
+                        <div class="space-y-2">
+                            <div id="cast-target" class="text-[10px] font-mono text-slate-500 truncate"></div>
+                            <input id="cast-search" type="search" placeholder="Search movies and shows..." autocomplete="off"
+                                   class="w-full rounded-lg bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500">
+                            <div id="cast-heading" class="text-[10px] font-mono uppercase tracking-wide text-slate-500 truncate min-h-[1.5rem] flex items-center">Latest additions</div>
+                            <div id="cast-msg" class="hidden text-[11px] font-mono break-words"></div>
+                            <div id="cast-list" class="space-y-2 max-h-[26rem] overflow-y-auto pr-1">
+                                <div class="text-xs text-slate-500 py-2">Loading...</div>
                             </div>
                         </div>
                     </div>
-                </div>
+                    </div>
 
-                <!-- BitTorrent Engine Widget -->
-                <div class="widget-card">
-                    <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-4 flex items-center gap-2">
-                        <i data-lucide="download-cloud" class="w-4 h-4 text-cyan-400"></i> BitTorrent Engine
-                    </h2>
-                    <div class="space-y-4 font-mono text-xs">
-                        <div>
-                            <div class="flex justify-between items-center mb-1.5">
-                                <span class="font-sans font-bold text-slate-300 text-[11px] flex items-center gap-1">
-                                    <span class="w-1.5 h-1.5 rounded-full bg-slate-500" id="qb-dot"></span> qBittorrent Client
-                                </span>
-                                <span id="qb-status-badge" class="text-[10px] px-1.5 py-0.5 rounded font-sans font-bold uppercase bg-slate-700 text-slate-400">Off</span>
+                    <!-- Media column: finding and adding shows -->
+                    <div class="contents lg:flex lg:flex-col lg:gap-6">
+                    <!-- Add Show (Sonarr) Widget -->
+                    <div class="widget-card">
+                        <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-2">
+                            <i data-lucide="tv" class="w-4 h-4 text-sky-400"></i> Add Show
+                        </h2>
+                        <div class="space-y-2">
+                            <input id="sn-search" type="search" placeholder="Search for a show to add to Sonarr..." autocomplete="off"
+                                   class="w-full rounded-lg bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500">
+                            <div class="grid grid-cols-2 gap-2">
+                                <select id="sn-root" aria-label="Root folder" title="Where the show is stored"
+                                        class="min-w-0 rounded-lg bg-slate-900/60 border border-slate-700 px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"></select>
+                                <select id="sn-profile" aria-label="Quality profile" title="Quality profile"
+                                        class="min-w-0 rounded-lg bg-slate-900/60 border border-slate-700 px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"></select>
+                                <select id="sn-monitor" aria-label="Which episodes to monitor" title="Which episodes to monitor"
+                                        class="min-w-0 rounded-lg bg-slate-900/60 border border-slate-700 px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500">
+                                    <option value="all">Monitor: all episodes</option>
+                                    <option value="future">Monitor: future episodes</option>
+                                    <option value="missing">Monitor: missing episodes</option>
+                                    <option value="firstSeason">Monitor: first season</option>
+                                    <option value="pilot">Monitor: pilot only</option>
+                                    <option value="none">Monitor: none</option>
+                                </select>
+                                <label class="flex items-center gap-2 text-xs text-slate-300 px-1 cursor-pointer">
+                                    <input id="sn-now" type="checkbox" checked class="accent-emerald-500"> Search right away
+                                </label>
                             </div>
-                            <div class="grid grid-cols-1 gap-y-1 text-[11px] text-slate-400">
-                                <div>Active Torrents: <span id="qb-active" class="text-slate-200">0</span></div>
-                                <div class="flex justify-between mt-0.5">
-                                    <span class="text-cyan-400 flex items-center gap-0.5"><i data-lucide="arrow-down" class="w-3 h-3"></i> <span id="qb-dl">0 B/s</span></span>
-                                    <span class="text-indigo-400 flex items-center gap-0.5"><i data-lucide="arrow-up" class="w-3 h-3"></i> <span id="qb-ul">0 B/s</span></span>
+                            <div id="sn-msg" class="hidden text-[11px] font-mono break-words"></div>
+                            <div id="sn-list" class="space-y-2 max-h-[26rem] overflow-y-auto pr-1">
+                                <div class="text-xs text-slate-500 py-2">Type a show name to search</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Upcoming Episodes (Sonarr calendar) Widget -->
+                    <div class="widget-card">
+                        <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-2">
+                            <i data-lucide="calendar-days" class="w-4 h-4 text-sky-400"></i> Upcoming Episodes
+                        </h2>
+                        <div class="space-y-2">
+                            <div id="cal-msg" class="hidden text-[11px] font-mono break-words text-rose-400"></div>
+                            <div id="cal-list" class="space-y-3 max-h-[26rem] overflow-y-auto pr-1">
+                                <div class="text-xs text-slate-500 py-2">Loading...</div>
+                            </div>
+                        </div>
+                    </div>
+                    </div>
+
+                    <!-- Media column: downloads -->
+                    <div class="contents lg:flex lg:flex-col lg:gap-6">
+                    <!-- BitTorrent Engine Widget -->
+                    <div class="widget-card">
+                        <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-4 flex items-center gap-2">
+                            <i data-lucide="download-cloud" class="w-4 h-4 text-cyan-400"></i> BitTorrent Engine
+                        </h2>
+                        <div class="space-y-4 font-mono text-xs">
+                            <div>
+                                <div class="flex justify-between items-center mb-1.5">
+                                    <span class="font-sans font-bold text-slate-300 text-[11px] flex items-center gap-1">
+                                        <span class="w-1.5 h-1.5 rounded-full bg-slate-500" id="qb-dot"></span> qBittorrent Client
+                                    </span>
+                                    <span id="qb-status-badge" class="text-[10px] px-1.5 py-0.5 rounded font-sans font-bold uppercase bg-slate-700 text-slate-400">Off</span>
+                                </div>
+                                <div class="grid grid-cols-1 gap-y-1 text-[11px] text-slate-400">
+                                    <div>Active Torrents: <span id="qb-active" class="text-slate-200">0</span></div>
+                                    <div class="flex justify-between mt-0.5">
+                                        <span class="text-cyan-400 flex items-center gap-0.5"><i data-lucide="arrow-down" class="w-3 h-3"></i> <span id="qb-dl">0 B/s</span></span>
+                                        <span class="text-indigo-400 flex items-center gap-0.5"><i data-lucide="arrow-up" class="w-3 h-3"></i> <span id="qb-ul">0 B/s</span></span>
+                                    </div>
                                 </div>
                             </div>
                         </div>
                     </div>
-                </div>
 
-                <!-- Sonarr Queue Widget -->
-                <div class="widget-card">
-                    <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-2">
-                        <i data-lucide="download" class="w-4 h-4 text-sky-400"></i> Sonarr Queue
-                    </h2>
-                    <div class="space-y-2">
-                        <div class="flex items-center justify-between gap-2">
-                            <div id="sq-summary" class="text-[11px] font-mono text-slate-400 truncate">Loading...</div>
-                            <span id="sq-vpn" class="text-[10px] px-1.5 py-0.5 rounded font-sans font-bold uppercase bg-slate-700 text-slate-400 shrink-0" title="Windscribe tunnel">VPN</span>
+                    <!-- Sonarr Queue Widget -->
+                    <div class="widget-card">
+                        <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-2">
+                            <i data-lucide="download" class="w-4 h-4 text-sky-400"></i> Sonarr Queue
+                        </h2>
+                        <div class="space-y-2">
+                            <div class="flex items-center justify-between gap-2">
+                                <div id="sq-summary" class="text-[11px] font-mono text-slate-400 truncate">Loading...</div>
+                                <span id="sq-vpn" class="text-[10px] px-1.5 py-0.5 rounded font-sans font-bold uppercase bg-slate-700 text-slate-400 shrink-0" title="Windscribe tunnel">VPN</span>
+                            </div>
+                            <div id="sq-msg" class="hidden text-[11px] font-mono break-words"></div>
+                            <div id="sq-list" class="space-y-2 max-h-[26rem] overflow-y-auto pr-1"></div>
                         </div>
-                        <div id="sq-msg" class="hidden text-[11px] font-mono break-words"></div>
-                        <div id="sq-list" class="space-y-2 max-h-[26rem] overflow-y-auto pr-1"></div>
                     </div>
-                </div>
-
-                <!-- Upcoming Episodes (Sonarr calendar) Widget -->
-                <div class="widget-card">
-                    <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-2">
-                        <i data-lucide="calendar-days" class="w-4 h-4 text-sky-400"></i> Upcoming Episodes
-                    </h2>
-                    <div class="space-y-2">
-                        <div id="cal-msg" class="hidden text-[11px] font-mono break-words text-rose-400"></div>
-                        <div id="cal-list" class="space-y-3 max-h-[26rem] overflow-y-auto pr-1">
-                            <div class="text-xs text-slate-500 py-2">Loading...</div>
-                        </div>
                     </div>
                 </div>
             </div>
@@ -1457,7 +1485,7 @@ async function updatePiholeData() {
                 console.error("PiHole data cycle dropped:", e); 
             }
         }
-		
+        
 
         async function fetchPiholeUpdates() {
             try {
