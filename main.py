@@ -1,6 +1,7 @@
 import asyncio
 import collections
 import contextlib
+import datetime
 import json
 import os
 import secrets
@@ -3243,6 +3244,119 @@ async def sonarr_queue():
             _sonarr_queue_cache["data"] = await _build_sonarr_queue()
             _sonarr_queue_cache["at"] = time.monotonic()
         return _sonarr_queue_cache["data"]
+
+# --- Sonarr calendar ---
+SONARR_CALENDAR_TTL = 300.0     # airing times don't change by the minute
+SONARR_CALENDAR_LIMIT = 150
+_sonarr_calendar_cache: Dict[str, Any] = {"at": 0.0, "days": 0, "data": None}
+_sonarr_calendar_lock = asyncio.Lock()
+
+async def _build_sonarr_calendar(days: int) -> Dict[str, Any]:
+    now = datetime.datetime.now(datetime.timezone.utc)
+    # One day back so something that aired last night and hasn't been downloaded yet still shows.
+    start = (now - datetime.timedelta(days=1)).date().isoformat()
+    end = (now + datetime.timedelta(days=days + 1)).date().isoformat()
+    found = await _sonarr_json("GET", "/api/v3/calendar", params={
+        "start": start, "end": end, "unmonitored": "false", "includeSeries": "true",
+    }, timeout=12.0)
+    items = []
+    for ep in sorted(found, key=lambda e: e.get("airDateUtc") or "")[:SONARR_CALENDAR_LIMIT]:
+        air = ep.get("airDateUtc")
+        if not air:
+            continue
+        try:
+            aired = datetime.datetime.fromisoformat(air.replace("Z", "+00:00")) <= now
+        except ValueError:
+            continue
+        series = ep.get("series") or {}
+        season, number = ep.get("seasonNumber"), ep.get("episodeNumber")
+        items.append({
+            "episode_id": ep.get("id"),
+            "series": series.get("title") or "Unknown show",
+            "series_id": ep.get("seriesId") or series.get("id") or 0,
+            "label": f"S{season:02d}E{number:02d}" if season is not None and number is not None else "",
+            "title": ep.get("title") or "",
+            "air_utc": air,
+            "aired": aired,
+            "has_file": bool(ep.get("hasFile")),
+        })
+    return {"items": items, "days": days}
+
+@app.get("/api/sonarr/calendar")
+async def sonarr_calendar(days: int = 7):
+    """Monitored episodes airing from yesterday through the next `days` days, and whether each one is
+    already downloaded. Times are UTC; the browser shows them in its own time zone."""
+    days = min(max(days, 1), 14)
+    async with _sonarr_calendar_lock:
+        c = _sonarr_calendar_cache
+        if c["data"] is None or c["days"] != days or time.monotonic() - c["at"] >= SONARR_CALENDAR_TTL:
+            c.update(data=await _build_sonarr_calendar(days), days=days, at=time.monotonic())
+        return c["data"]
+
+# --- Health banner: Sonarr + Prowlarr health checks, and the tunnel/torrent combination ---
+PROWLARR_URL = os.environ.get("PROWLARR_URL", "http://192.168.1.10:9696").rstrip("/")
+PROWLARR_API_KEY = os.environ.get("PROWLARR_API_KEY", "")
+ARR_HEALTH_TTL = 30.0
+_arr_health_cache: Dict[str, Any] = {"at": 0.0, "data": None}
+_arr_health_lock = asyncio.Lock()
+
+async def _arr_health(name: str, base_url: str, key: str, path: str) -> Dict[str, Any]:
+    """One app's own health checks (the same list as its System -> Status page). Never raises: a problem
+    reaching the app is itself something the banner reports."""
+    if not key:
+        return {"state": "unconfigured", "items": []}
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            res = await client.get(f"{base_url}{path}", headers={"X-Api-Key": key, "Accept": "application/json"})
+        if res.status_code in (401, 403):
+            return {"state": "bad_key", "items": []}
+        if res.status_code != 200:
+            return {"state": "unreachable", "items": []}
+        data = res.json()
+    except (httpx.HTTPError, ValueError):
+        return {"state": "unreachable", "items": []}
+    items = []
+    for h in data if isinstance(data, list) else []:
+        if h.get("type") not in ("warning", "error") or not h.get("message"):
+            continue      # "notice" is mostly "an update is available" - not banner material
+        wiki = str(h.get("wikiUrl") or "")
+        items.append({
+            "source": name, "level": h["type"], "message": str(h["message"]),
+            "url": wiki if wiki.startswith("https://") else "",
+        })
+    return {"state": "ok", "items": items}
+
+async def _build_arr_health() -> Dict[str, Any]:
+    sonarr, prowlarr = await asyncio.gather(
+        _arr_health("Sonarr", SONARR_URL, SONARR_API_KEY, "/api/v3/health"),
+        _arr_health("Prowlarr", PROWLARR_URL, PROWLARR_API_KEY, "/api/v1/health"),
+    )
+    items: List[Dict[str, Any]] = []
+    for name, result in (("Sonarr", sonarr), ("Prowlarr", prowlarr)):
+        if result["state"] == "unreachable":
+            items.append({"source": name, "level": "error", "message": f"{name} can't be reached - is it running?", "url": ""})
+        elif result["state"] == "bad_key":
+            items.append({"source": name, "level": "error", "message": f"{name} rejected the API key", "url": ""})
+        items.extend(result["items"])
+    return {"items": items, "sources": {"sonarr": sonarr["state"], "prowlarr": prowlarr["state"]}}
+
+@app.get("/api/arr/health")
+async def arr_health():
+    async with _arr_health_lock:
+        if _arr_health_cache["data"] is None or time.monotonic() - _arr_health_cache["at"] >= ARR_HEALTH_TTL:
+            _arr_health_cache.update(data=await _build_arr_health(), at=time.monotonic())
+        cached = _arr_health_cache["data"]
+    items = list(cached["items"])
+    # Worked out fresh from the telemetry caches on every call (no extra requests): torrents running
+    # while the tunnel is down is the one combination worth shouting about.
+    active = qbittorrent_cache.get("active_torrents", 0)
+    if qbittorrent_cache.get("status") == "active" and active and wireguard_cache.get("status") != "active":
+        items.append({
+            "source": "VPN", "level": "warning", "url": "",
+            "message": f"The Windscribe tunnel is down while qBittorrent has {active} active torrent{'s' if active != 1 else ''}",
+        })
+    items.sort(key=lambda i: 0 if i["level"] == "error" else 1)
+    return {"items": items, "sources": cached["sources"]}
 
 if __name__ == "__main__":
     import uvicorn

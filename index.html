@@ -94,6 +94,8 @@
                 </span>
             </div>
         </header>
+        <!-- Health banner: Sonarr / Prowlarr health checks; stays hidden while everything is fine -->
+        <div id="health-banner" class="hidden mb-4 sm:mb-6 rounded-xl border px-4 py-3 text-xs font-mono space-y-1.5" role="status"></div>
         <!-- Main Body: 25% | 50% | 25% -->
         <div class="grid grid-cols-1 lg:grid-cols-4 gap-4 lg:gap-6 mb-6">
             
@@ -598,6 +600,19 @@
                         </div>
                         <div id="sq-msg" class="hidden text-[11px] font-mono break-words"></div>
                         <div id="sq-list" class="space-y-2 max-h-[26rem] overflow-y-auto pr-1"></div>
+                    </div>
+                </div>
+
+                <!-- Upcoming Episodes (Sonarr calendar) Widget -->
+                <div class="widget-card">
+                    <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-2">
+                        <i data-lucide="calendar-days" class="w-4 h-4 text-sky-400"></i> Upcoming Episodes
+                    </h2>
+                    <div class="space-y-2">
+                        <div id="cal-msg" class="hidden text-[11px] font-mono break-words text-rose-400"></div>
+                        <div id="cal-list" class="space-y-3 max-h-[26rem] overflow-y-auto pr-1">
+                            <div class="text-xs text-slate-500 py-2">Loading...</div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -2251,6 +2266,100 @@ async function updatePiholeData() {
             }
         }
 
+        // --- Health banner: Sonarr + Prowlarr health checks, and torrents running while the VPN is down ---
+        let healthBusy = false;
+        async function loadHealthBanner() {
+            const el = document.getElementById('health-banner');
+            if (!el || healthBusy || document.hidden) return;
+            healthBusy = true;
+            try {
+                const res = await fetch('/api/arr/health');
+                if (!res.ok) { el.classList.add('hidden'); return; }
+                const items = (await res.json()).items || [];
+                if (!items.length) { el.classList.add('hidden'); return; }
+                const hasError = items.some(i => i.level === 'error');
+                el.className = 'mb-4 sm:mb-6 rounded-xl border px-4 py-3 text-xs font-mono space-y-1.5 ' +
+                    (hasError ? 'border-rose-500/40 bg-rose-500/10 text-rose-300' : 'border-amber-500/40 bg-amber-500/10 text-amber-300');
+                el.innerHTML = items.map(i => `<div class="flex flex-wrap gap-x-2 items-baseline">
+                    <i data-lucide="${i.level === 'error' ? 'octagon-alert' : 'triangle-alert'}" class="w-3.5 h-3.5 shrink-0 self-center"></i>
+                    <span class="font-bold shrink-0">${escapeHtml(i.source)}</span>
+                    <span class="break-words min-w-0">${escapeHtml(i.message)}</span>
+                    ${i.url ? `<a href="${escapeHtml(i.url)}" target="_blank" rel="noopener noreferrer" class="underline shrink-0">details</a>` : ''}
+                </div>`).join('');
+                lucide.createIcons();
+            } catch (e) {
+                el.classList.add('hidden');   // a dashboard hiccup isn't a Sonarr problem
+            } finally {
+                healthBusy = false;
+            }
+        }
+
+        // --- Upcoming Episodes: Sonarr's calendar, grouped by day in this browser's time zone ---
+        function calDayKey(d) { return d.toLocaleDateString('en-CA'); }   // YYYY-MM-DD, local
+        function calDayLabel(key) {
+            const today = new Date(), tomorrow = new Date(), yesterday = new Date();
+            tomorrow.setDate(today.getDate() + 1);
+            yesterday.setDate(today.getDate() - 1);
+            if (key === calDayKey(today)) return 'Today';
+            if (key === calDayKey(tomorrow)) return 'Tomorrow';
+            if (key === calDayKey(yesterday)) return 'Yesterday';
+            const [y, m, d] = key.split('-').map(Number);
+            return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+        }
+
+        function calRowHtml(it) {
+            const at = new Date(it.air_utc);
+            const time = at.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+            const status = it.has_file ? '<span class="text-emerald-400">Downloaded</span>'
+                : it.aired ? '<span class="text-amber-400">Not downloaded</span>'
+                : `<span class="text-slate-400">${escapeHtml(time)}</span>`;
+            const poster = it.series_id ? `/api/sonarr/poster?series_id=${encodeURIComponent(it.series_id)}` : '';
+            return `<div class="flex items-center gap-3 p-2 rounded-lg bg-slate-900/40 border border-slate-700/40">
+                ${poster ? `<img class="cast-poster w-8 h-12 rounded object-cover bg-slate-800 shrink-0" loading="lazy" alt="" src="${poster}">` : ''}
+                <div class="min-w-0 flex-1">
+                    <div class="text-sm text-slate-200 truncate">${escapeHtml(it.series)}</div>
+                    <div class="text-[10px] font-mono text-slate-500 truncate">${escapeHtml([it.label, it.title].filter(Boolean).join(' · '))}</div>
+                </div>
+                <div class="text-[10px] font-mono shrink-0 text-right">${it.has_file || it.aired ? escapeHtml(time) + '<br>' : ''}${status}</div>
+            </div>`;
+        }
+
+        let calBusy = false;
+        async function loadCalendar(force) {
+            const list = document.getElementById('cal-list');
+            if (!list || calBusy) return;
+            if (!force && (document.hidden || list.closest('.widget-card').classList.contains('is-collapsed'))) return;
+            calBusy = true;
+            const msg = document.getElementById('cal-msg');
+            try {
+                const res = await fetch('/api/sonarr/calendar?days=7');
+                const body = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    msg.textContent = body.detail || `Dashboard error ${res.status} - see: journalctl -u dashboard`;
+                    msg.classList.remove('hidden');
+                    list.innerHTML = '';
+                    return;
+                }
+                msg.classList.add('hidden');
+                const days = new Map();
+                for (const it of body.items || []) {
+                    const key = calDayKey(new Date(it.air_utc));
+                    if (!days.has(key)) days.set(key, []);
+                    days.get(key).push(it);
+                }
+                list.innerHTML = days.size
+                    ? [...days].map(([key, rows]) => `<div class="space-y-2">
+                        <div class="text-[10px] font-mono uppercase tracking-wide text-slate-500">${escapeHtml(calDayLabel(key))}</div>
+                        ${rows.map(calRowHtml).join('')}</div>`).join('')
+                    : '<div class="text-xs text-slate-500 py-2">Nothing airing in the next 7 days</div>';
+            } catch (e) {
+                msg.textContent = 'Could not reach the dashboard';
+                msg.classList.remove('hidden');
+            } finally {
+                calBusy = false;
+            }
+        }
+
         // --- Minimizable widgets + mobile ordering ---
         // Runs once at load and enhances every .widget-card in place: the content under the
         // heading is moved (not cloned) into a .widget-body wrapper, so every element id and
@@ -2261,7 +2370,7 @@ async function updatePiholeData() {
         // Mobile stacking order (desktop keeps its three-column layout). Lower = higher on the page.
         const MOBILE_ORDER = [
             'active-streams', 'tv-remote', 'open-on-tv', 'add-show', 'hardware-controls', 'core-services-daemon', 'system-hardware',
-            'network-protection', 'bittorrent-engine', 'sonarr-queue', 'tunnel-routing-topology', 'media-integrity',
+            'network-protection', 'bittorrent-engine', 'sonarr-queue', 'upcoming-episodes', 'tunnel-routing-topology', 'media-integrity',
             'process-monitor', 'package-manager', 'public-ip', 'pi-hole-updates',
             'system-compute-timeline', 'i-o-throughput-history-kb-s'
         ];
@@ -2385,6 +2494,10 @@ async function updatePiholeData() {
         initAddShow();
         loadSonarrQueue(true);
         setInterval(loadSonarrQueue, 5000);
+        loadCalendar(true);
+        setInterval(loadCalendar, 300000);
+        loadHealthBanner();
+        setInterval(loadHealthBanner, 30000);
         lucide.createIcons();
     </script>
 </body>
