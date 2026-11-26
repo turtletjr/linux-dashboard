@@ -2874,6 +2874,376 @@ async def tv_open(payload: TvOpenRequest):
     print(f"[Open on TV] {item.get('Name')!r} on {dev.name}")
     return {"status": "opened", "name": item.get("Name"), "tv": dev.id}
 
+# --- Sonarr: add a show, and the download queue joined to qBittorrent ---
+# Optional integration: with no SONARR_API_KEY the two widgets just say Sonarr isn't configured.
+# The API key stays server-side; the browser only ever talks to this app.
+SONARR_URL = os.environ.get("SONARR_URL", "http://192.168.1.10:8989").rstrip("/")
+SONARR_API_KEY = os.environ.get("SONARR_API_KEY", "")
+SONARR_LOOKUP_LIMIT = 15
+SONARR_QUEUE_TTL = 4.0          # seconds a queue snapshot is reused; Sonarr is only polled while a browser asks
+SONARR_QUEUE_PAGE_SIZE = 200
+SONARR_MONITOR_CHOICES = ("all", "future", "missing", "firstSeason", "pilot", "none")
+
+class SonarrAddRequest(BaseModel):
+    tvdb_id: int
+    root_folder_path: str
+    quality_profile_id: int
+    monitor: Literal["all", "future", "missing", "firstSeason", "pilot", "none"] = "all"
+    search_now: bool = True
+
+async def _sonarr(method: str, path: str, params: Any = None, body: Any = None, timeout: float = 8.0) -> httpx.Response:
+    """One Sonarr API call. Returns the response untouched; _sonarr_json is the checked variant."""
+    if not SONARR_API_KEY:
+        raise HTTPException(status_code=503, detail="Sonarr isn't configured - set SONARR_URL and SONARR_API_KEY in .env")
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            return await client.request(
+                method, f"{SONARR_URL}{path}", params=params, json=body,
+                headers={"X-Api-Key": SONARR_API_KEY, "Accept": "application/json"},
+            )
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="Sonarr unreachable - check SONARR_URL") from None
+
+async def _sonarr_json(method: str, path: str, params: Any = None, body: Any = None, timeout: float = 8.0) -> Any:
+    res = await _sonarr(method, path, params=params, body=body, timeout=timeout)
+    if res.status_code in (401, 403):
+        raise HTTPException(status_code=502, detail="Sonarr rejected the API key - check SONARR_API_KEY")
+    if not 200 <= res.status_code < 300:
+        raise HTTPException(status_code=502, detail=f"Sonarr returned HTTP {res.status_code}")
+    try:
+        return res.json()
+    except ValueError:
+        raise HTTPException(status_code=502, detail="Sonarr returned something that isn't JSON - check SONARR_URL") from None
+
+# Poster addresses for shows that are not in the library yet. They come from Sonarr's own lookup answer
+# (never from the browser), and the browser can only ask for one by TVDB id.
+_sonarr_poster_urls: Dict[int, str] = {}
+
+def _remember_poster(tvdb_id: Any, images: Any) -> None:
+    for img in images or []:
+        url = str(img.get("remoteUrl") or "")
+        if img.get("coverType") == "poster" and url.startswith("https://"):
+            if len(_sonarr_poster_urls) > 300:
+                _sonarr_poster_urls.clear()
+            _sonarr_poster_urls[int(tvdb_id)] = url
+            return
+
+@app.get("/api/sonarr/poster")
+async def sonarr_poster(series_id: int = 0, tvdb: int = 0):
+    """Poster for a show: from Sonarr's own cover cache for shows already in the library (series_id),
+    or the remote image Sonarr's lookup pointed at for one that isn't (tvdb). Sent through this app so
+    the browser needs no route to Sonarr and the API key never leaves the server."""
+    try:
+        if series_id > 0:
+            res = await _sonarr("GET", f"/MediaCover/{series_id}/poster-250.jpg", timeout=6.0)
+        elif tvdb in _sonarr_poster_urls:
+            # Plain client, no Sonarr key: this goes to an outside image host.
+            async with httpx.AsyncClient(timeout=6.0, follow_redirects=False) as client:
+                res = await client.get(_sonarr_poster_urls[tvdb])
+        else:
+            raise HTTPException(status_code=404, detail="No poster")
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="Poster unreachable") from None
+    ctype = res.headers.get("content-type", "")
+    if res.status_code == 404:
+        raise HTTPException(status_code=404, detail="No poster")
+    if res.status_code != 200 or not ctype.startswith("image/"):
+        raise HTTPException(status_code=502, detail="No image returned")
+    return Response(content=res.content, media_type=ctype, headers={"Cache-Control": "private, max-age=3600"})
+
+@app.get("/api/sonarr/options")
+async def sonarr_options():
+    """What the Add Show widget offers: Sonarr's root folders and quality profiles."""
+    roots, profiles = await asyncio.gather(
+        _sonarr_json("GET", "/api/v3/rootfolder"),
+        _sonarr_json("GET", "/api/v3/qualityprofile"),
+    )
+    return {
+        "root_folders": [
+            {"path": r.get("path"), "free_gb": round((r.get("freeSpace") or 0) / 1024 ** 3, 1)}
+            for r in roots if r.get("path")
+        ],
+        "quality_profiles": [{"id": p.get("id"), "name": p.get("name")} for p in profiles if p.get("id") is not None],
+        "monitor": list(SONARR_MONITOR_CHOICES),
+    }
+
+@app.get("/api/sonarr/lookup")
+async def sonarr_lookup(q: str = ""):
+    """Search for a show to add. Sonarr also understands tvdb:<id> and imdb:<id> as the term."""
+    term = q.strip()[:80]
+    if len(term) < 2:
+        return {"items": []}
+    found = await _sonarr_json("GET", "/api/v3/series/lookup", params={"term": term}, timeout=15.0)
+    items = []
+    for s in found[:SONARR_LOOKUP_LIMIT]:
+        tvdb = s.get("tvdbId")
+        if not tvdb:
+            continue
+        _remember_poster(tvdb, s.get("images"))
+        overview = (s.get("overview") or "").strip()
+        items.append({
+            "tvdb_id": tvdb,
+            "title": s.get("title") or "Untitled",
+            "year": s.get("year") or 0,
+            "network": s.get("network") or "",
+            "status": s.get("status") or "",
+            "seasons": sum(1 for x in s.get("seasons") or [] if x.get("seasonNumber", 0) > 0),
+            "overview": overview[:220] + ("..." if len(overview) > 220 else ""),
+            "in_library": bool(s.get("id")),
+            "series_id": s.get("id") or 0,
+        })
+    return {"items": items}
+
+_sonarr_major_version = 0
+
+async def _sonarr_language_profile_id() -> Optional[int]:
+    """Sonarr v3 insists on a language profile when adding a show; v4 dropped the concept."""
+    global _sonarr_major_version
+    if not _sonarr_major_version:
+        status = await _sonarr_json("GET", "/api/v3/system/status")
+        m = re.match(r"(\d+)\.", str(status.get("version") or ""))
+        _sonarr_major_version = int(m.group(1)) if m else 4
+    if _sonarr_major_version >= 4:
+        return None
+    profiles = await _sonarr_json("GET", "/api/v3/languageprofile")
+    return profiles[0].get("id") if profiles else None
+
+@app.post("/api/sonarr/add")
+async def sonarr_add(payload: SonarrAddRequest):
+    roots, profiles = await asyncio.gather(
+        _sonarr_json("GET", "/api/v3/rootfolder"),
+        _sonarr_json("GET", "/api/v3/qualityprofile"),
+    )
+    if payload.root_folder_path not in {r.get("path") for r in roots}:
+        raise HTTPException(status_code=400, detail="That root folder isn't one of Sonarr's")
+    if payload.quality_profile_id not in {p.get("id") for p in profiles}:
+        raise HTTPException(status_code=400, detail="That quality profile isn't one of Sonarr's")
+
+    # Sonarr wants its own lookup object back with the choices filled in, so look the show up again
+    # by id here rather than trusting a description of it from the browser.
+    found = await _sonarr_json("GET", "/api/v3/series/lookup", params={"term": f"tvdb:{payload.tvdb_id}"}, timeout=15.0)
+    series = next((s for s in found if s.get("tvdbId") == payload.tvdb_id), None)
+    if not series:
+        raise HTTPException(status_code=404, detail="Sonarr couldn't find that show")
+    if series.get("id"):
+        raise HTTPException(status_code=409, detail=f"{series.get('title')} is already in Sonarr")
+
+    body = dict(series)
+    body.pop("id", None)
+    body.update(
+        qualityProfileId=payload.quality_profile_id,
+        rootFolderPath=payload.root_folder_path,
+        monitored=True,
+        seasonFolder=True,
+        addOptions={
+            "monitor": payload.monitor,
+            "searchForMissingEpisodes": payload.search_now,
+            "searchForCutoffUnmetEpisodes": False,
+        },
+    )
+    language_id = await _sonarr_language_profile_id()
+    if language_id is not None:
+        body["languageProfileId"] = language_id
+
+    res = await _sonarr("POST", "/api/v3/series", body=body, timeout=20.0)
+    if res.status_code in (200, 201):
+        title = res.json().get("title") or series.get("title")
+        print(f"[Sonarr] added {title!r} (monitor={payload.monitor}, search_now={payload.search_now})")
+        return {"status": "added", "title": title, "searching": payload.search_now}
+    if res.status_code == 400:
+        try:
+            reasons = "; ".join(str(e.get("errorMessage")) for e in res.json() if e.get("errorMessage"))
+        except Exception:
+            reasons = ""
+        if "already" in reasons.lower():
+            raise HTTPException(status_code=409, detail=f"{series.get('title')} is already in Sonarr")
+        raise HTTPException(status_code=400, detail=reasons or "Sonarr refused to add that show")
+    if res.status_code in (401, 403):
+        raise HTTPException(status_code=502, detail="Sonarr rejected the API key - check SONARR_API_KEY")
+    raise HTTPException(status_code=502, detail=f"Sonarr returned HTTP {res.status_code}")
+
+# qBittorrent state -> (label, kind). The kind picks the progress-bar colour in the widget.
+_QB_STATE = {
+    "downloading": ("Downloading", "active"), "forcedDL": ("Downloading", "active"),
+    "metaDL": ("Fetching metadata", "active"), "forcedMetaDL": ("Fetching metadata", "active"),
+    "stalledDL": ("Stalled", "stalled"), "queuedDL": ("Queued", "queued"),
+    "pausedDL": ("Paused", "paused"), "stoppedDL": ("Paused", "paused"),
+    "checkingDL": ("Checking", "checking"), "checkingUP": ("Checking", "checking"),
+    "checkingResumeData": ("Checking", "checking"), "allocating": ("Allocating", "checking"),
+    "moving": ("Moving", "checking"),
+    "uploading": ("Seeding", "done"), "forcedUP": ("Seeding", "done"), "stalledUP": ("Seeding", "done"),
+    "queuedUP": ("Seeding", "done"), "pausedUP": ("Complete", "done"), "stoppedUP": ("Complete", "done"),
+    "error": ("Error", "error"), "missingFiles": ("Missing files", "error"),
+}
+# Once the torrent is finished, what Sonarr is doing with it is the more useful thing to show.
+_SONARR_STATE = {
+    "importPending": ("Import pending", "checking"), "importing": ("Importing", "checking"),
+    "importBlocked": ("Import blocked", "error"), "failedPending": ("Failed", "error"),
+    "failed": ("Failed", "error"),
+}
+_HASH_RE = re.compile(r"[0-9a-fA-F]{40}")
+
+def _fmt_size(num_bytes: Any) -> str:
+    n = float(num_bytes or 0)
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return ""
+
+def _fmt_eta(seconds: Any) -> str:
+    try:
+        s = int(seconds)
+    except (TypeError, ValueError):
+        return ""
+    if s < 0 or s >= 8_640_000:      # qBittorrent reports 8640000 for "never"
+        return ""
+    d, rem = divmod(s, 86400)
+    h, rem = divmod(rem, 3600)
+    m, sec = divmod(rem, 60)
+    if d:
+        return f"{d}d {h}h"
+    if h:
+        return f"{h}h {m:02d}m"
+    if m:
+        return f"{m}m {sec:02d}s"
+    return f"{sec}s"
+
+def _sonarr_timeleft_seconds(text: Any) -> Optional[int]:
+    m = re.fullmatch(r"(?:(\d+)\.)?(\d+):(\d{2}):(\d{2})(?:\.\d+)?", str(text or ""))
+    if not m:
+        return None
+    days, h, mi, s = (int(x or 0) for x in m.groups())
+    return days * 86400 + h * 3600 + mi * 60 + s
+
+def _episode_label(episodes: List[Any]) -> str:
+    """S02E05, S02E01-E08 for a season pack, or a count when it spans several seasons."""
+    found = sorted({(e.get("seasonNumber"), e.get("episodeNumber")) for e in episodes
+                    if e.get("seasonNumber") is not None and e.get("episodeNumber") is not None})
+    if not found:
+        return ""
+    seasons = {s for s, _ in found}
+    if len(seasons) > 1:
+        return f"{len(found)} episodes"
+    season, numbers = found[0][0], [n for _, n in found]
+    if len(numbers) == 1:
+        return f"S{season:02d}E{numbers[0]:02d}"
+    if numbers[-1] - numbers[0] + 1 == len(numbers):
+        return f"S{season:02d}E{numbers[0]:02d}-E{numbers[-1]:02d}"
+    return f"S{season:02d} · {len(numbers)} episodes"
+
+async def _qb_get_json(path: str, params: Any = None) -> Any:
+    """GET from qBittorrent's WebUI API with the shared session cookie, logging in again if it expired.
+    None when qBittorrent can't be reached, so callers can carry on without it."""
+    global qb_session_cookie
+    headers = {"Referer": QBITTORRENT_URL}
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            for _ in range(2):
+                cookies = {"SID": qb_session_cookie} if qb_session_cookie else {}
+                res = await client.get(f"{QBITTORRENT_URL}{path}", params=params, cookies=cookies, headers=headers)
+                if res.status_code == 403:
+                    qb_session_cookie = await qbittorrent_login(client)
+                    if not qb_session_cookie:
+                        return None
+                    continue
+                return res.json() if res.status_code == 200 else None
+    except Exception:
+        return None
+    return None
+
+async def _build_sonarr_queue() -> Dict[str, Any]:
+    data = await _sonarr_json("GET", "/api/v3/queue", params={
+        "page": 1, "pageSize": SONARR_QUEUE_PAGE_SIZE, "includeSeries": "true", "includeEpisode": "true",
+    }, timeout=10.0)
+    records = data.get("records") if isinstance(data, dict) else data
+    records = records or []
+
+    # A season pack is one download with a queue record per episode; fold those into one row.
+    groups: Dict[str, Dict[str, Any]] = {}
+    for rec in records:
+        key = str(rec.get("downloadId") or f"queue-{rec.get('id')}")
+        g = groups.get(key)
+        if not g:
+            series = rec.get("series") or {}
+            g = groups[key] = {"rec": rec, "series": series, "episodes": [], "messages": []}
+        if rec.get("episode"):
+            g["episodes"].append(rec["episode"])
+        for sm in rec.get("statusMessages") or []:
+            text = (sm.get("messages") or [sm.get("title")])[0]
+            if text and text not in g["messages"]:
+                g["messages"].append(text)
+        if rec.get("errorMessage") and rec["errorMessage"] not in g["messages"]:
+            g["messages"].append(rec["errorMessage"])
+
+    hashes = sorted({k.lower() for k in groups if _HASH_RE.fullmatch(k)})
+    qb_ok, torrents = False, {}
+    if hashes:
+        found = await _qb_get_json("/api/v2/torrents/info", {"hashes": "|".join(hashes)})
+        if found is not None:
+            qb_ok = True
+            torrents = {str(t.get("hash", "")).lower(): t for t in found}
+
+    items, total_speed, active, warnings = [], 0, 0, 0
+    for key, g in groups.items():
+        rec, series = g["rec"], g["series"]
+        t = torrents.get(key.lower())
+        size = rec.get("size") or 0
+        left = rec.get("sizeleft") or 0
+        progress = (size - left) / size * 100 if size else 0.0
+        dl_speed = up_speed = seeds = peers = 0
+        eta = _fmt_eta(_sonarr_timeleft_seconds(rec.get("timeleft")))
+        label, kind = "Waiting", "queued"
+        if t:
+            progress = float(t.get("progress") or 0) * 100
+            dl_speed, up_speed = t.get("dlspeed") or 0, t.get("upspeed") or 0
+            seeds, peers = t.get("num_seeds") or 0, t.get("num_leechs") or 0
+            eta = _fmt_eta(t.get("eta"))
+            label, kind = _QB_STATE.get(t.get("state"), (str(t.get("state") or "Unknown"), "stalled"))
+        elif rec.get("trackedDownloadState") == "downloading":
+            label, kind = "Downloading", "active"
+        sonarr_state = _SONARR_STATE.get(rec.get("trackedDownloadState"))
+        if sonarr_state and (not t or kind in ("done", "checking")):
+            label, kind = sonarr_state
+        warn = rec.get("trackedDownloadStatus") in ("warning", "error") or bool(g["messages"]) or kind == "error"
+        total_speed += dl_speed
+        active += kind == "active"
+        warnings += warn
+        items.append({
+            "key": key,
+            "series": series.get("title") or rec.get("title") or "Unknown show",
+            "series_id": rec.get("seriesId") or series.get("id") or 0,
+            "episodes": _episode_label(g["episodes"]),
+            "release": rec.get("title") or "",
+            "state": label, "kind": kind, "warning": warn, "message": g["messages"][0] if g["messages"] else "",
+            "progress": round(min(max(progress, 0.0), 100.0), 1),
+            "dl_speed": format_speed(dl_speed) if dl_speed else "", "up_speed": format_speed(up_speed) if up_speed else "",
+            "eta": eta, "seeds": seeds, "peers": peers, "size": _fmt_size(size),
+            "indexer": rec.get("indexer") or "", "protocol": rec.get("protocol") or "",
+            "in_qb": bool(t),
+        })
+    return {
+        "items": items,
+        "qb_ok": qb_ok or not hashes,
+        "vpn": {"status": wireguard_cache.get("status", "inactive"), "endpoint": wireguard_cache.get("endpoint", "--")},
+        "summary": {"total": len(items), "active": active, "warnings": warnings, "dl_speed": format_speed(total_speed)},
+    }
+
+_sonarr_queue_cache: Dict[str, Any] = {"at": 0.0, "data": None}
+_sonarr_queue_lock = asyncio.Lock()
+
+@app.get("/api/sonarr/queue")
+async def sonarr_queue():
+    """Sonarr's download queue with each torrent's live progress, speed and state from qBittorrent.
+    Sonarr links a queue entry to its torrent through the torrent hash (its downloadId). The snapshot is
+    shared for a few seconds, so several open tabs cost Sonarr and qBittorrent one request each, and nothing
+    is polled while no browser is looking."""
+    async with _sonarr_queue_lock:
+        if _sonarr_queue_cache["data"] is None or time.monotonic() - _sonarr_queue_cache["at"] >= SONARR_QUEUE_TTL:
+            _sonarr_queue_cache["data"] = await _build_sonarr_queue()
+            _sonarr_queue_cache["at"] = time.monotonic()
+        return _sonarr_queue_cache["data"]
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -463,6 +463,38 @@
                         </div>
                     </div>
                 </div>
+                <!-- Add Show (Sonarr) Widget -->
+                <div class="widget-card">
+                    <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-2">
+                        <i data-lucide="tv" class="w-4 h-4 text-sky-400"></i> Add Show
+                    </h2>
+                    <div class="space-y-2">
+                        <input id="sn-search" type="search" placeholder="Search for a show to add to Sonarr..." autocomplete="off"
+                               class="w-full rounded-lg bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500">
+                        <div class="grid grid-cols-2 gap-2">
+                            <select id="sn-root" aria-label="Root folder" title="Where the show is stored"
+                                    class="min-w-0 rounded-lg bg-slate-900/60 border border-slate-700 px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"></select>
+                            <select id="sn-profile" aria-label="Quality profile" title="Quality profile"
+                                    class="min-w-0 rounded-lg bg-slate-900/60 border border-slate-700 px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"></select>
+                            <select id="sn-monitor" aria-label="Which episodes to monitor" title="Which episodes to monitor"
+                                    class="min-w-0 rounded-lg bg-slate-900/60 border border-slate-700 px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500">
+                                <option value="all">Monitor: all episodes</option>
+                                <option value="future">Monitor: future episodes</option>
+                                <option value="missing">Monitor: missing episodes</option>
+                                <option value="firstSeason">Monitor: first season</option>
+                                <option value="pilot">Monitor: pilot only</option>
+                                <option value="none">Monitor: none</option>
+                            </select>
+                            <label class="flex items-center gap-2 text-xs text-slate-300 px-1 cursor-pointer">
+                                <input id="sn-now" type="checkbox" checked class="accent-emerald-500"> Search right away
+                            </label>
+                        </div>
+                        <div id="sn-msg" class="hidden text-[11px] font-mono break-words"></div>
+                        <div id="sn-list" class="space-y-2 max-h-[26rem] overflow-y-auto pr-1">
+                            <div class="text-xs text-slate-500 py-2">Type a show name to search</div>
+                        </div>
+                    </div>
+                </div>
                 <!-- Public IP Widget -->
                 <div class="widget-card">
                     <div class="flex justify-between items-center mb-3">
@@ -551,6 +583,21 @@
                                 </div>
                             </div>
                         </div>
+                    </div>
+                </div>
+
+                <!-- Sonarr Queue Widget -->
+                <div class="widget-card">
+                    <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-2">
+                        <i data-lucide="download" class="w-4 h-4 text-sky-400"></i> Sonarr Queue
+                    </h2>
+                    <div class="space-y-2">
+                        <div class="flex items-center justify-between gap-2">
+                            <div id="sq-summary" class="text-[11px] font-mono text-slate-400 truncate">Loading...</div>
+                            <span id="sq-vpn" class="text-[10px] px-1.5 py-0.5 rounded font-sans font-bold uppercase bg-slate-700 text-slate-400 shrink-0" title="Windscribe tunnel">VPN</span>
+                        </div>
+                        <div id="sq-msg" class="hidden text-[11px] font-mono break-words"></div>
+                        <div id="sq-list" class="space-y-2 max-h-[26rem] overflow-y-auto pr-1"></div>
                     </div>
                 </div>
             </div>
@@ -1983,6 +2030,227 @@ async function updatePiholeData() {
             loadCastLibrary();
         }
 
+        // --- Add Show: search for a show and add it to Sonarr ---
+        // The browser only talks to this app; Sonarr's address and API key stay on the server.
+        let snSeq = 0, snMsgTimer = null, snSearchTimer = null, snBusy = false;
+        const SN_PREFS_KEY = 'dashboard.sonarrAdd';
+
+        function snPrefs() {
+            try { return JSON.parse(localStorage.getItem(SN_PREFS_KEY)) || {}; } catch (e) { return {}; }
+        }
+        function snSavePrefs() {
+            const prefs = {
+                root: document.getElementById('sn-root').value, profile: document.getElementById('sn-profile').value,
+                monitor: document.getElementById('sn-monitor').value, now: document.getElementById('sn-now').checked
+            };
+            try { localStorage.setItem(SN_PREFS_KEY, JSON.stringify(prefs)); } catch (e) { /* private mode etc. */ }
+        }
+
+        function showSnMessage(text, isError, sticky) {
+            const el = document.getElementById('sn-msg');
+            if (!el) return;
+            el.textContent = text;
+            el.className = `text-[11px] font-mono break-words ${isError ? 'text-rose-400' : 'text-emerald-400'}`;
+            clearTimeout(snMsgTimer);
+            if (!sticky) snMsgTimer = setTimeout(() => el.classList.add('hidden'), isError ? 9000 : 5000);
+        }
+
+        function snRowHtml(it) {
+            const meta = [it.year || '', it.network, it.seasons ? `${it.seasons} season${it.seasons === 1 ? '' : 's'}` : '', it.status]
+                .filter(Boolean).join(' · ');
+            const poster = it.in_library && it.series_id
+                ? `/api/sonarr/poster?series_id=${encodeURIComponent(it.series_id)}`
+                : `/api/sonarr/poster?tvdb=${encodeURIComponent(it.tvdb_id)}`;
+            const action = it.in_library
+                ? '<span class="text-[10px] font-mono text-emerald-400 shrink-0 px-2">In Sonarr</span>'
+                : `<button type="button" class="tv-btn px-3 shrink-0" data-sn-add="${escapeHtml(it.tvdb_id)}" data-sn-name="${escapeHtml(it.title)}">Add</button>`;
+            return `<div class="flex items-start gap-3 p-2 rounded-lg bg-slate-900/40 border border-slate-700/40">
+                <img class="cast-poster w-10 h-14 rounded object-cover bg-slate-800 shrink-0" loading="lazy" alt="" src="${poster}">
+                <div class="min-w-0 flex-1">
+                    <div class="text-sm text-slate-200 truncate">${escapeHtml(it.title)}</div>
+                    <div class="text-[10px] font-mono text-slate-500 truncate">${escapeHtml(meta)}</div>
+                    <div class="text-[10px] text-slate-500 line-clamp-2">${escapeHtml(it.overview)}</div>
+                </div>
+                ${action}
+            </div>`;
+        }
+
+        async function snSearch() {
+            const list = document.getElementById('sn-list');
+            if (!list) return;
+            const q = document.getElementById('sn-search').value.trim();
+            if (q.length < 2) {
+                snSeq++;
+                list.innerHTML = '<div class="text-xs text-slate-500 py-2">Type a show name to search</div>';
+                return;
+            }
+            const seq = ++snSeq;   // ignore answers that arrive after a newer search was started
+            list.innerHTML = '<div class="text-xs text-slate-500 py-2">Searching...</div>';
+            try {
+                const res = await fetch('/api/sonarr/lookup?' + new URLSearchParams({ q }).toString());
+                const body = await res.json().catch(() => ({}));
+                if (seq !== snSeq) return;
+                if (!res.ok) {
+                    list.innerHTML = `<div class="text-xs text-rose-400 py-2">${escapeHtml(body.detail || `Dashboard error ${res.status} - see: journalctl -u dashboard`)}</div>`;
+                    return;
+                }
+                list.innerHTML = (body.items || []).length
+                    ? body.items.map(snRowHtml).join('')
+                    : '<div class="text-xs text-slate-500 py-2">Nothing found</div>';
+                list.scrollTop = 0;
+            } catch (e) {
+                if (seq === snSeq) list.innerHTML = '<div class="text-xs text-rose-400 py-2">Could not reach the dashboard</div>';
+            }
+        }
+
+        async function snAdd(tvdbId, name, btn) {
+            if (snBusy) return;
+            const root = document.getElementById('sn-root').value;
+            const profile = document.getElementById('sn-profile').value;
+            if (!root || !profile) {
+                showSnMessage('Pick a root folder and quality profile first', true);
+                return;
+            }
+            snBusy = true;
+            btn.disabled = true;
+            showSnMessage(`Adding "${name}"...`, false, true);
+            try {
+                const res = await fetch('/api/sonarr/add', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        tvdb_id: Number(tvdbId), root_folder_path: root, quality_profile_id: Number(profile),
+                        monitor: document.getElementById('sn-monitor').value, search_now: document.getElementById('sn-now').checked
+                    })
+                });
+                const d = await res.json().catch(() => ({}));
+                if (res.ok) {
+                    showSnMessage(`Added ${d.title || name}${d.searching ? ' - searching for episodes' : ''}`, false);
+                    btn.outerHTML = '<span class="text-[10px] font-mono text-emerald-400 shrink-0 px-2">Added</span>';
+                } else {
+                    showSnMessage(d.detail || `Dashboard error ${res.status} - see: journalctl -u dashboard`, true);
+                    if (res.status === 409) btn.outerHTML = '<span class="text-[10px] font-mono text-emerald-400 shrink-0 px-2">In Sonarr</span>';
+                }
+            } catch (e) {
+                showSnMessage('Request failed - check your connection', true);
+            } finally {
+                snBusy = false;
+                if (btn.isConnected) btn.disabled = false;
+            }
+        }
+
+        async function snLoadOptions() {
+            const rootSel = document.getElementById('sn-root'), profSel = document.getElementById('sn-profile');
+            if (!rootSel) return;
+            try {
+                const res = await fetch('/api/sonarr/options');
+                const body = await res.json().catch(() => ({}));
+                if (!res.ok) { showSnMessage(body.detail || `Dashboard error ${res.status}`, true, true); return; }
+                const prefs = snPrefs();
+                rootSel.innerHTML = (body.root_folders || []).map(r =>
+                    `<option value="${escapeHtml(r.path)}">${escapeHtml(r.path)} (${escapeHtml(r.free_gb)} GB free)</option>`).join('');
+                profSel.innerHTML = (body.quality_profiles || []).map(p =>
+                    `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('');
+                // Remembered choices apply only while they still exist in Sonarr.
+                if (prefs.root && [...rootSel.options].some(o => o.value === prefs.root)) rootSel.value = prefs.root;
+                if (prefs.profile && [...profSel.options].some(o => o.value === prefs.profile)) profSel.value = prefs.profile;
+            } catch (e) {
+                showSnMessage('Could not reach the dashboard', true, true);
+            }
+        }
+
+        function initAddShow() {
+            const input = document.getElementById('sn-search');
+            if (!input) return;
+            const prefs = snPrefs();
+            if (prefs.monitor && [...document.getElementById('sn-monitor').options].some(o => o.value === prefs.monitor)) {
+                document.getElementById('sn-monitor').value = prefs.monitor;
+            }
+            if (typeof prefs.now === 'boolean') document.getElementById('sn-now').checked = prefs.now;
+            ['sn-root', 'sn-profile', 'sn-monitor', 'sn-now'].forEach(id => document.getElementById(id).addEventListener('change', snSavePrefs));
+            input.addEventListener('input', () => {
+                clearTimeout(snSearchTimer);
+                snSearchTimer = setTimeout(snSearch, 450);
+            });
+            document.addEventListener('click', (e) => {
+                const add = e.target.closest('[data-sn-add]');
+                if (add) snAdd(add.dataset.snAdd, add.dataset.snName || 'this show', add);
+            });
+            snLoadOptions();
+        }
+
+        // --- Sonarr Queue: Sonarr's downloads with live progress from qBittorrent ---
+        const SQ_BAR = { active: 'bg-cyan-500', stalled: 'bg-amber-500', queued: 'bg-slate-500', paused: 'bg-slate-500',
+                         checking: 'bg-indigo-500', done: 'bg-emerald-500', error: 'bg-rose-500' };
+        const SQ_TEXT = { active: 'text-cyan-400', stalled: 'text-amber-400', queued: 'text-slate-400', paused: 'text-slate-400',
+                          checking: 'text-indigo-400', done: 'text-emerald-400', error: 'text-rose-400' };
+
+        function sqRowHtml(it) {
+            const title = [it.series, it.episodes].filter(Boolean).join(' · ');
+            const stats = [
+                `<span class="${SQ_TEXT[it.kind] || 'text-slate-400'} font-bold">${escapeHtml(it.state)}</span>`,
+                `${escapeHtml(it.progress.toFixed(1))}%`,
+                it.dl_speed ? `<span class="text-cyan-400">↓ ${escapeHtml(it.dl_speed)}</span>` : '',
+                it.up_speed ? `<span class="text-indigo-400">↑ ${escapeHtml(it.up_speed)}</span>` : '',
+                it.eta ? `ETA ${escapeHtml(it.eta)}` : '',
+                it.in_qb ? `${escapeHtml(it.seeds)} seeds · ${escapeHtml(it.peers)} peers` : '',
+                it.size ? escapeHtml(it.size) : ''
+            ].filter(Boolean).join(' <span class="text-slate-600">|</span> ');
+            const poster = it.series_id ? `/api/sonarr/poster?series_id=${encodeURIComponent(it.series_id)}` : '';
+            return `<div class="flex items-start gap-3 p-2 rounded-lg bg-slate-900/40 border ${it.warning ? 'border-amber-500/40' : 'border-slate-700/40'}">
+                ${poster ? `<img class="cast-poster w-8 h-12 rounded object-cover bg-slate-800 shrink-0" loading="lazy" alt="" src="${poster}">` : ''}
+                <div class="min-w-0 flex-1 space-y-1">
+                    <div class="text-sm text-slate-200 truncate" title="${escapeHtml(title)}">${escapeHtml(title)}</div>
+                    <div class="text-[10px] font-mono text-slate-500 truncate" title="${escapeHtml(it.release)}">${escapeHtml(it.release)}</div>
+                    <div class="h-1.5 rounded bg-slate-700/60 overflow-hidden"><div class="h-full ${SQ_BAR[it.kind] || 'bg-slate-500'}" style="width:${Math.min(100, Math.max(0, it.progress))}%"></div></div>
+                    <div class="text-[10px] font-mono text-slate-400 flex flex-wrap gap-x-1.5">${stats}</div>
+                    ${it.message ? `<div class="text-[10px] font-mono text-amber-400 break-words">${escapeHtml(it.message)}</div>` : ''}
+                </div>
+            </div>`;
+        }
+
+        function showSqMessage(text) {
+            const el = document.getElementById('sq-msg');
+            if (!el) return;
+            el.textContent = text || '';
+            el.className = `text-[11px] font-mono break-words text-rose-400${text ? '' : ' hidden'}`;
+        }
+
+        let sqBusy = false;
+        async function loadSonarrQueue(force) {
+            const list = document.getElementById('sq-list');
+            if (!list || sqBusy) return;
+            // Skip the poll while the tab is in the background or the widget is minimized.
+            if (!force && (document.hidden || list.closest('.widget-card').classList.contains('is-collapsed'))) return;
+            sqBusy = true;
+            try {
+                const res = await fetch('/api/sonarr/queue');
+                const body = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    showSqMessage(body.detail || `Dashboard error ${res.status} - see: journalctl -u dashboard`);
+                    document.getElementById('sq-summary').textContent = 'Unavailable';
+                    return;
+                }
+                const s = body.summary || {};
+                const vpn = document.getElementById('sq-vpn');
+                const vpnUp = (body.vpn || {}).status === 'active';
+                vpn.textContent = vpnUp ? 'VPN on' : 'VPN off';
+                vpn.className = `text-[10px] px-1.5 py-0.5 rounded font-sans font-bold uppercase shrink-0 ${vpnUp ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`;
+                vpn.title = vpnUp ? `Windscribe tunnel up (${(body.vpn || {}).endpoint || '--'})` : 'Windscribe tunnel is down';
+                showSqMessage(body.qb_ok ? '' : "Can't reach qBittorrent - showing what Sonarr knows");
+                document.getElementById('sq-summary').textContent = s.total
+                    ? `${s.total} in queue · ${s.active} downloading · ${s.dl_speed}${s.warnings ? ` · ${s.warnings} need attention` : ''}`
+                    : 'Queue is empty';
+                const scroll = list.scrollTop;
+                list.innerHTML = (body.items || []).map(sqRowHtml).join('');
+                list.scrollTop = scroll;
+            } catch (e) {
+                showSqMessage('Could not reach the dashboard');
+            } finally {
+                sqBusy = false;
+            }
+        }
+
         // --- Minimizable widgets + mobile ordering ---
         // Runs once at load and enhances every .widget-card in place: the content under the
         // heading is moved (not cloned) into a .widget-body wrapper, so every element id and
@@ -1992,8 +2260,8 @@ async function updatePiholeData() {
 
         // Mobile stacking order (desktop keeps its three-column layout). Lower = higher on the page.
         const MOBILE_ORDER = [
-            'active-streams', 'tv-remote', 'open-on-tv', 'hardware-controls', 'core-services-daemon', 'system-hardware',
-            'network-protection', 'bittorrent-engine', 'tunnel-routing-topology', 'media-integrity',
+            'active-streams', 'tv-remote', 'open-on-tv', 'add-show', 'hardware-controls', 'core-services-daemon', 'system-hardware',
+            'network-protection', 'bittorrent-engine', 'sonarr-queue', 'tunnel-routing-topology', 'media-integrity',
             'process-monitor', 'package-manager', 'public-ip', 'pi-hole-updates',
             'system-compute-timeline', 'i-o-throughput-history-kb-s'
         ];
@@ -2114,6 +2382,9 @@ async function updatePiholeData() {
         updateTvStatus();
         setInterval(updateTvStatus, 5000);
         initCast();
+        initAddShow();
+        loadSonarrQueue(true);
+        setInterval(loadSonarrQueue, 5000);
         lucide.createIcons();
     </script>
 </body>
