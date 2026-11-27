@@ -36,23 +36,25 @@ common homelab services.
 The dashboard is one page: a health banner (it appears only when Sonarr or Prowlarr
 report a problem), three columns, and a full-width Media section underneath.
 
-- **Left (system)** — hardware power controls, OS package updates, a live list
-  of monitored systemd services.
-- **Center** — CPU/RAM history chart, network + disk I/O history chart,
-  per-core CPU + RAM + per-drive usage (used/free/total, whole-disk size,
-  SMART health/temperature/life remaining, an Unmount button for
-  non-system drives, and a Mount All button that mounts anything in
-  `/etc/fstab` that isn't mounted yet), and a process
-  monitor that flags processes hogging CPU or stuck in an uninterruptible
-  (`D`) state, plus a media integrity checker that scans the media library
-  for blank, truncated or corrupt video files on demand.
+- **Left (system)** — hardware power controls, OS package updates, and system
+  hardware: per-core CPU + RAM +
+  per-drive usage (used/free/total, whole-disk size, SMART
+  health/temperature/life remaining, an Unmount button for non-system drives,
+  and a Mount All button that mounts anything in `/etc/fstab` that isn't
+  mounted yet).
+- **Center** — CPU/RAM history chart, network + disk I/O history chart, a
+  process monitor that flags processes hogging CPU or stuck in an
+  uninterruptible (`D`) state, and a live list of monitored systemd services.
 - **Right (network)** — Pi-hole stats/controls, Pi-hole's own update checker,
   public IP, WireGuard + Tailscale tunnel status.
 - **Media** (three columns across the full width) — active Jellyfin streams
   with playback controls, a virtual remote for a Google TV / Android TV, Open
   on TV; Add Show (search and add to Sonarr) and Sonarr's upcoming episodes;
   qBittorrent transfer stats and Sonarr's download queue with live qBittorrent
-  progress.
+  progress; and the media integrity checker, which scans the media library for
+  blank, truncated or corrupt video files on demand. The **Media** button in
+  the header jumps straight to this section (desktop only — on a phone these
+  widgets are already near the top).
 
 On a phone the columns and the Media section dissolve into one list, with the
 most-used widgets first. Every widget can be minimized.

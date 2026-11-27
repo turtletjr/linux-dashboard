@@ -22,6 +22,10 @@
         min-width: 0;
       }
 
+      /* The header's Media link scrolls smoothly (unless the system asks for less motion). */
+      html { scroll-behavior: smooth; }
+      @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
       /* --- Minimizable widgets --- */
       /* JS wraps everything under a card's heading in .widget-body so it can be hidden as one unit. */
       .widget-body { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
@@ -83,6 +87,9 @@
             </h1>
 
             <div class="flex flex-wrap gap-2.5 items-center w-full sm:w-auto sm:justify-end text-xs font-mono">
+                <a href="#media-section" class="hidden lg:flex bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700 text-slate-300 hover:text-white items-center gap-2 transition-colors" title="Jump to the Media section">
+                    <i data-lucide="clapperboard" class="w-3.5 h-3.5"></i> Media
+                </a>
                 <button id="collapse-all-btn" type="button" class="bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700 text-slate-300 hover:text-white cursor-pointer flex items-center gap-2 transition-colors" title="Collapse or expand every widget">
                     <i data-lucide="chevrons-down-up" class="w-3.5 h-3.5"></i> <span id="collapse-all-label">Collapse all</span>
                 </button>
@@ -175,12 +182,46 @@
                 <div class="text-[10px] font-mono text-slate-500 text-right mt-2">Last scan: <span id="last-checked">Never</span></div>
             </div>
 
-            <!-- Core Services Daemon Widget -->
+            <!-- System Hardware Widget -->
             <div class="widget-card">
-                <h2 class="text-xs font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-1.5">
-                    <span class="w-1.5 h-1.5 bg-emerald-400 rounded-full"></span> Core Services Daemon
-                </h2>
-                <div id="primary-services-box" class="space-y-1.5 max-h-[22rem] overflow-y-auto pr-1"></div>
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="font-bold text-emerald-400 flex items-center gap-1.5 text-sm">
+                        <i data-lucide="cpu" class="w-4 h-4"></i> System Hardware
+                    </h3>
+                    <span id="primary-temp" class="text-xs font-mono bg-slate-900 px-2 py-0.5 rounded text-slate-400 border border-slate-700/50">--°C</span>
+                </div>
+                <div class="space-y-4 text-xs">
+                    <div>
+                        <div class="flex justify-between font-mono text-[11px] mb-1">
+                            <span class="text-slate-400">CPU Compute Overhead</span>
+                            <span id="primary-cpu-txt" class="font-bold text-slate-200">0%</span>
+                        </div>
+                        <div class="w-full bg-slate-900 h-2 rounded-full overflow-hidden border border-slate-700/30 mb-3">
+                            <div id="primary-cpu-bar" class="bg-emerald-500 h-full transition-all duration-500" style="width: 0%"></div>
+                        </div>
+
+                        <div id="cpu-cores-container" class="grid grid-cols-2 gap-2 text-[10px] font-mono pt-1 pb-2"></div>
+                    </div>
+                    <div>
+                        <div class="flex justify-between font-mono text-[11px] mb-1">
+                            <span class="text-slate-400">RAM System Allocation</span>
+                            <span id="primary-ram-txt" class="font-bold text-slate-200">0%</span>
+                        </div>
+                        <div class="w-full bg-slate-900 h-2 rounded-full overflow-hidden border border-slate-700/30">
+                            <div id="primary-ram-bar" class="bg-indigo-500 h-full transition-all duration-500" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div class="flex items-center justify-between gap-2 border-t border-slate-700/50 mt-3 pt-2">
+                        <div class="min-w-0 flex flex-col">
+                            <span class="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Drives</span>
+                            <span id="unmounted-note" class="hidden text-[10px] text-amber-400 truncate"></span>
+                        </div>
+                        <button id="mount-all-btn" class="shrink-0 bg-slate-800 hover:bg-emerald-600/20 border border-slate-700 hover:border-emerald-500 text-slate-300 hover:text-emerald-300 px-2.5 py-1 rounded text-[10px] font-sans font-semibold cursor-pointer flex items-center gap-1.5 transition disabled:opacity-50 disabled:cursor-wait" title="Mount every drive listed in /etc/fstab that isn't mounted yet">
+                            <i data-lucide="hard-drive-download" class="w-3.5 h-3.5"></i> Mount All
+                        </button>
+                    </div>
+                    <div id="primary-disks" class="pt-2 space-y-3 mt-1 grid grid-cols-1 md:max-lg:grid-cols-2 gap-x-4 gap-y-1"></div>
+                </div>
             </div>
             </div>
 
@@ -214,48 +255,6 @@
                     </div>
                 </div>
 
-                <!-- System Hardware Widget -->
-                <div class="widget-card">
-                    <div class="flex justify-between items-center mb-4">
-                        <h3 class="font-bold text-emerald-400 flex items-center gap-1.5 text-sm">
-                            <i data-lucide="cpu" class="w-4 h-4"></i> System Hardware
-                        </h3>
-                        <span id="primary-temp" class="text-xs font-mono bg-slate-900 px-2 py-0.5 rounded text-slate-400 border border-slate-700/50">--°C</span>
-                    </div>
-                    <div class="space-y-4 text-xs">
-                        <div>
-                            <div class="flex justify-between font-mono text-[11px] mb-1">
-                                <span class="text-slate-400">CPU Compute Overhead</span>
-                                <span id="primary-cpu-txt" class="font-bold text-slate-200">0%</span>
-                            </div>
-                            <div class="w-full bg-slate-900 h-2 rounded-full overflow-hidden border border-slate-700/30 mb-3">
-                                <div id="primary-cpu-bar" class="bg-emerald-500 h-full transition-all duration-500" style="width: 0%"></div>
-                            </div>
-                            
-                            <div id="cpu-cores-container" class="grid grid-cols-2 gap-2 text-[10px] font-mono pt-1 pb-2"></div>
-                        </div>
-                        <div>
-                            <div class="flex justify-between font-mono text-[11px] mb-1">
-                                <span class="text-slate-400">RAM System Allocation</span>
-                                <span id="primary-ram-txt" class="font-bold text-slate-200">0%</span>
-                            </div>
-                            <div class="w-full bg-slate-900 h-2 rounded-full overflow-hidden border border-slate-700/30">
-                                <div id="primary-ram-bar" class="bg-indigo-500 h-full transition-all duration-500" style="width: 0%"></div>
-                            </div>
-                        </div>
-                        <div class="flex items-center justify-between gap-2 border-t border-slate-700/50 mt-3 pt-2">
-                            <div class="min-w-0 flex flex-col">
-                                <span class="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Drives</span>
-                                <span id="unmounted-note" class="hidden text-[10px] text-amber-400 truncate"></span>
-                            </div>
-                            <button id="mount-all-btn" class="shrink-0 bg-slate-800 hover:bg-emerald-600/20 border border-slate-700 hover:border-emerald-500 text-slate-300 hover:text-emerald-300 px-2.5 py-1 rounded text-[10px] font-sans font-semibold cursor-pointer flex items-center gap-1.5 transition disabled:opacity-50 disabled:cursor-wait" title="Mount every drive listed in /etc/fstab that isn't mounted yet">
-                                <i data-lucide="hard-drive-download" class="w-3.5 h-3.5"></i> Mount All
-                            </button>
-                        </div>
-                        <div id="primary-disks" class="pt-2 space-y-3 mt-1 grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1"></div>
-                    </div>
-                </div>
-
                 <!-- Process Monitor Widget -->
                 <div class="widget-card">
                     <div class="flex justify-between items-center mb-4">
@@ -269,39 +268,12 @@
                     </div>
                 </div>
 
-                <!-- Media Integrity Widget -->
+                <!-- Core Services Daemon Widget -->
                 <div class="widget-card">
-                    <div class="flex justify-between items-center mb-4">
-                        <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase flex items-center gap-2">
-                            <i data-lucide="film" class="w-4 h-4 text-rose-400"></i> Media Integrity
-                        </h2>
-                        <span id="media-last" class="text-[10px] font-mono text-slate-500">Never run</span>
-                    </div>
-
-                    <div class="flex flex-wrap gap-2 items-center">
-                        <select id="media-mode" class="flex-1 min-w-[10rem] bg-slate-900 border border-slate-700 rounded-md text-[11px] text-slate-300 px-2 py-1.5 font-mono cursor-pointer disabled:opacity-50">
-                            <option value="header">Header only (fast)</option>
-                            <option value="probe">Probe every packet (reads whole library)</option>
-                            <option value="full">Full decode (very slow on a Pi)</option>
-                        </select>
-                        <button id="media-start" onclick="startMediaCheck(false)" class="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-[11px] font-medium px-3 py-1.5 rounded-md transition-colors cursor-pointer whitespace-nowrap">Run check</button>
-                        <button id="media-recheck" onclick="startMediaCheck(true)" title="Check only the files in the current list again" class="bg-slate-700 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed text-white text-[11px] font-medium px-3 py-1.5 rounded-md transition-colors cursor-pointer whitespace-nowrap">Re-check listed</button>
-                        <button id="media-cancel" onclick="cancelMediaCheck()" class="hidden bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-medium px-3 py-1.5 rounded-md transition-colors cursor-pointer whitespace-nowrap">Cancel</button>
-                    </div>
-
-                    <div id="media-progress" class="hidden mt-3 bg-slate-900/50 p-3 rounded-lg border border-sky-500/30 flex flex-col gap-2">
-                        <div class="flex justify-between text-[11px] font-mono">
-                            <span id="media-progress-label" class="text-sky-400">Working...</span>
-                            <span id="media-progress-pct" class="text-slate-200 font-bold"></span>
-                        </div>
-                        <div class="w-full bg-slate-950 h-2 rounded-full overflow-hidden border border-slate-800">
-                            <div id="media-progress-bar" class="bg-sky-500 h-full transition-all duration-500" style="width: 0%"></div>
-                        </div>
-                        <div id="media-current" class="text-[10px] font-mono text-slate-400 truncate"></div>
-                    </div>
-
-                    <div id="media-summary" class="mt-3 text-[11px] font-mono text-slate-400"></div>
-                    <div id="media-results" class="mt-2 space-y-1.5 max-h-[22rem] overflow-y-auto pr-1"></div>
+                    <h2 class="text-xs font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-1.5">
+                        <span class="w-1.5 h-1.5 bg-emerald-400 rounded-full"></span> Core Services Daemon
+                    </h2>
+                    <div id="primary-services-box" class="space-y-1.5 max-h-[22rem] overflow-y-auto pr-1"></div>
                 </div>
             </div>
 
@@ -436,7 +408,7 @@
             <!-- Media section: full width on desktop, in three columns. On a phone every wrapper below dissolves
                  ("contents") so the widgets stay siblings in the main grid and the mobile ordering still applies. -->
             <div class="contents lg:block lg:col-span-4">
-                <div class="hidden lg:flex items-center gap-2 mt-2 mb-4 pt-5 border-t border-slate-700">
+                <div id="media-section" class="hidden lg:flex items-center gap-2 mt-2 mb-4 pt-5 border-t border-slate-700 scroll-mt-4">
                     <h2 class="text-sm font-semibold tracking-wide text-emerald-400 uppercase flex items-center gap-2">
                         <i data-lucide="clapperboard" class="w-4 h-4"></i> Media
                     </h2>
@@ -640,6 +612,41 @@
                             <div id="sq-msg" class="hidden text-[11px] font-mono break-words"></div>
                             <div id="sq-list" class="space-y-2 max-h-[26rem] overflow-y-auto pr-1"></div>
                         </div>
+                    </div>
+
+                    <!-- Media Integrity Widget -->
+                    <div class="widget-card">
+                        <div class="flex justify-between items-center mb-4">
+                            <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase flex items-center gap-2">
+                                <i data-lucide="film" class="w-4 h-4 text-rose-400"></i> Media Integrity
+                            </h2>
+                            <span id="media-last" class="text-[10px] font-mono text-slate-500">Never run</span>
+                        </div>
+
+                        <div class="flex flex-wrap gap-2 items-center">
+                            <select id="media-mode" class="flex-1 min-w-[10rem] bg-slate-900 border border-slate-700 rounded-md text-[11px] text-slate-300 px-2 py-1.5 font-mono cursor-pointer disabled:opacity-50">
+                                <option value="header">Header only (fast)</option>
+                                <option value="probe">Probe every packet (reads whole library)</option>
+                                <option value="full">Full decode (very slow on a Pi)</option>
+                            </select>
+                            <button id="media-start" onclick="startMediaCheck(false)" class="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-[11px] font-medium px-3 py-1.5 rounded-md transition-colors cursor-pointer whitespace-nowrap">Run check</button>
+                            <button id="media-recheck" onclick="startMediaCheck(true)" title="Check only the files in the current list again" class="bg-slate-700 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed text-white text-[11px] font-medium px-3 py-1.5 rounded-md transition-colors cursor-pointer whitespace-nowrap">Re-check listed</button>
+                            <button id="media-cancel" onclick="cancelMediaCheck()" class="hidden bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-medium px-3 py-1.5 rounded-md transition-colors cursor-pointer whitespace-nowrap">Cancel</button>
+                        </div>
+
+                        <div id="media-progress" class="hidden mt-3 bg-slate-900/50 p-3 rounded-lg border border-sky-500/30 flex flex-col gap-2">
+                            <div class="flex justify-between text-[11px] font-mono">
+                                <span id="media-progress-label" class="text-sky-400">Working...</span>
+                                <span id="media-progress-pct" class="text-slate-200 font-bold"></span>
+                            </div>
+                            <div class="w-full bg-slate-950 h-2 rounded-full overflow-hidden border border-slate-800">
+                                <div id="media-progress-bar" class="bg-sky-500 h-full transition-all duration-500" style="width: 0%"></div>
+                            </div>
+                            <div id="media-current" class="text-[10px] font-mono text-slate-400 truncate"></div>
+                        </div>
+
+                        <div id="media-summary" class="mt-3 text-[11px] font-mono text-slate-400"></div>
+                        <div id="media-results" class="mt-2 space-y-1.5 max-h-[22rem] overflow-y-auto pr-1"></div>
                     </div>
                     </div>
                 </div>
