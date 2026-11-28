@@ -46,7 +46,7 @@ Prowlarr or Seerr report a problem), three columns, and a full-width Media secti
   process monitor that flags processes hogging CPU or stuck in an
   uninterruptible (`D`) state, and a live list of monitored systemd services.
 - **Right (network)** — Pi-hole stats/controls, Pi-hole's own update checker,
-  public IP, WireGuard + Tailscale tunnel status.
+  public IP (with an on-demand speed test), WireGuard + Tailscale tunnel status.
 - **Media** (three columns across the full width) — active Jellyfin streams
   with playback controls, a virtual remote for a Google TV / Android TV, Open
   on TV; Add Media (search and add a show to Sonarr or a movie to Radarr),

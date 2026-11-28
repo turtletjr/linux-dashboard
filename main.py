@@ -981,6 +981,97 @@ async def fetch_public_ip() -> str:
         public_ip_cache = "Unavailable"
     return public_ip_cache
 
+# --- ON-DEMAND SPEED TEST (Public IP widget) ---
+# Dependency-free: measures through whatever route the server's traffic takes
+# right now (so with the Windscribe tunnel up, it measures the VPN), using
+# Cloudflare's public speed-test endpoints. Never runs on a timer — it uses real
+# bandwidth, so it only runs when the Run test button is clicked.
+SPEEDTEST_DOWN_URL = "https://speed.cloudflare.com/__down"
+SPEEDTEST_UP_URL = "https://speed.cloudflare.com/__up"
+SPEEDTEST_DOWN_SECONDS = 8.0
+SPEEDTEST_UP_SECONDS = 6.0
+SPEEDTEST_WARMUP_SECONDS = 1.5   # TCP slow-start ramp-up is excluded from the download figure
+SPEEDTEST_STREAMS = 4
+SPEEDTEST_UP_CHUNK = b"\0" * (2 * 1024 * 1024)
+
+speedtest_lock = asyncio.Lock()
+speedtest_last_result: Optional[Dict[str, Any]] = None
+
+async def _speedtest_latency(client: httpx.AsyncClient) -> Dict[str, float]:
+    samples: List[float] = []
+    for _ in range(7):
+        t0 = time.perf_counter()
+        res = await client.get(SPEEDTEST_DOWN_URL, params={"bytes": 0})
+        res.raise_for_status()
+        samples.append((time.perf_counter() - t0) * 1000.0)
+    samples = samples[1:]   # the first request pays the DNS + TLS handshake
+    diffs = [abs(a - b) for a, b in zip(samples, samples[1:])]
+    return {"ping_ms": min(samples), "jitter_ms": sum(diffs) / len(diffs)}
+
+async def _speedtest_download(client: httpx.AsyncClient) -> float:
+    start = time.perf_counter()
+    deadline = start + SPEEDTEST_DOWN_SECONDS
+    total = 0
+    mark: Optional[tuple] = None   # (time, bytes) once the warm-up window has passed
+
+    async def worker():
+        nonlocal total, mark
+        while time.perf_counter() < deadline:
+            async with client.stream("GET", SPEEDTEST_DOWN_URL, params={"bytes": 25_000_000}) as res:
+                res.raise_for_status()
+                async for chunk in res.aiter_bytes(65536):
+                    total += len(chunk)
+                    now = time.perf_counter()
+                    if mark is None and now - start >= SPEEDTEST_WARMUP_SECONDS:
+                        mark = (now, total)
+                    if now >= deadline:
+                        return
+
+    await asyncio.gather(*(worker() for _ in range(SPEEDTEST_STREAMS)))
+    end = time.perf_counter()
+    if mark is not None and end - mark[0] > 0.5:
+        elapsed, nbytes = end - mark[0], total - mark[1]
+    else:
+        elapsed, nbytes = end - start, total
+    if nbytes <= 0 or elapsed <= 0:
+        raise RuntimeError("download returned no data")
+    return nbytes * 8 / elapsed / 1e6
+
+async def _speedtest_upload(client: httpx.AsyncClient) -> float:
+    start = time.perf_counter()
+    deadline = start + SPEEDTEST_UP_SECONDS
+    total = 0
+    last_done = start
+
+    async def worker():
+        nonlocal total, last_done
+        while time.perf_counter() < deadline:
+            res = await client.post(SPEEDTEST_UP_URL, content=SPEEDTEST_UP_CHUNK)
+            res.raise_for_status()
+            total += len(SPEEDTEST_UP_CHUNK)   # count only fully completed uploads
+            last_done = time.perf_counter()
+
+    await asyncio.gather(*(worker() for _ in range(SPEEDTEST_STREAMS)))
+    elapsed = last_done - start
+    if total <= 0 or elapsed <= 0:
+        raise RuntimeError("upload completed no data")
+    return total * 8 / elapsed / 1e6
+
+async def run_speedtest() -> Dict[str, Any]:
+    global speedtest_last_result
+    async with httpx.AsyncClient(timeout=httpx.Timeout(15.0), follow_redirects=True) as client:
+        latency = await _speedtest_latency(client)
+        down = await _speedtest_download(client)
+        up = await _speedtest_upload(client)
+    speedtest_last_result = {
+        "download_mbps": round(down, 1),
+        "upload_mbps": round(up, 1),
+        "ping_ms": round(latency["ping_ms"], 1),
+        "jitter_ms": round(latency["jitter_ms"], 1),
+        "tested_at": time.strftime("%Y-%m-%d %H:%M"),
+    }
+    return speedtest_last_result
+
 VIRTUAL_IFACE_PREFIXES = ("lo", "docker", "veth", "br-", "virbr", "tailscale", "wg", "tun", "tap", "zt", "ppp", "ifb")
 
 def pick_network_interface(preferred: str = "eth0") -> str:
@@ -1679,6 +1770,24 @@ async def get_public_ip():
     Refresh in the Public IP widget."""
     ip = await fetch_public_ip()
     return {"public_ip": ip, "checked_at": time.strftime("%H:%M:%S")}
+
+@app.get("/api/network/speedtest")
+async def get_speedtest_last():
+    """Last speed-test result (in memory, lost on restart) — never starts a test."""
+    return {"result": speedtest_last_result, "running": speedtest_lock.locked()}
+
+@app.post("/api/network/speedtest")
+async def post_speedtest():
+    """Runs a ~20s speed test and returns the result. One at a time."""
+    if speedtest_lock.locked():
+        raise HTTPException(status_code=409, detail="A speed test is already running")
+    async with speedtest_lock:
+        try:
+            result = await run_speedtest()
+        except Exception as e:
+            print(f"[Speedtest Exception]: {e!r}")
+            raise HTTPException(status_code=502, detail="Speed test failed — couldn't reach speed.cloudflare.com")
+    return {"result": result, "running": False}
 
 @app.get("/api/windscribe/locations")
 async def get_windscribe_locations():

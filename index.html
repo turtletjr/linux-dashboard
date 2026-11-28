@@ -350,6 +350,31 @@
                     <span id="public-ip-address" class="text-lg font-bold font-mono text-slate-200 tracking-wider">--.---.---.---</span>
                 </div>
                 <div class="text-[10px] font-mono text-slate-500 text-right mt-2">Checked: <span id="public-ip-checked-at">Never</span></div>
+
+                <!-- Speed test: on demand only (~20s, uses real bandwidth) -->
+                <div class="border-t border-slate-700/50 mt-3 pt-3">
+                    <div class="flex justify-between items-center mb-2">
+                        <span class="text-[11px] font-semibold tracking-wide text-slate-400 uppercase flex items-center gap-1.5">
+                            <i data-lucide="gauge" class="w-3.5 h-3.5 text-sky-400"></i> Speed Test
+                        </span>
+                        <button onclick="runSpeedtest()" id="speedtest-btn" class="bg-sky-600 hover:bg-sky-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-sans font-medium text-[10px] px-3 py-1.5 rounded-md transition-colors cursor-pointer whitespace-nowrap">Run test</button>
+                    </div>
+                    <div class="grid grid-cols-3 gap-2 text-center font-mono">
+                        <div class="bg-slate-900/50 p-2 rounded-lg border border-slate-700/50">
+                            <div class="text-[9px] text-slate-500 uppercase">Down</div>
+                            <div class="text-sm font-bold text-slate-200"><span id="speedtest-down">--</span> <span class="text-[9px] font-normal text-slate-500">Mbps</span></div>
+                        </div>
+                        <div class="bg-slate-900/50 p-2 rounded-lg border border-slate-700/50">
+                            <div class="text-[9px] text-slate-500 uppercase">Up</div>
+                            <div class="text-sm font-bold text-slate-200"><span id="speedtest-up">--</span> <span class="text-[9px] font-normal text-slate-500">Mbps</span></div>
+                        </div>
+                        <div class="bg-slate-900/50 p-2 rounded-lg border border-slate-700/50">
+                            <div class="text-[9px] text-slate-500 uppercase">Ping</div>
+                            <div class="text-sm font-bold text-slate-200"><span id="speedtest-ping">--</span> <span class="text-[9px] font-normal text-slate-500">ms</span></div>
+                        </div>
+                    </div>
+                    <div class="text-[10px] font-mono text-slate-500 text-right mt-2"><span id="speedtest-status">Last run: Never</span></div>
+                </div>
             </div>
 
             <!-- Tunnel Routing Topology Widget -->
@@ -975,6 +1000,45 @@ async function toggleServiceState(service, action) {
             } finally {
                 btn.disabled = false;
                 if (icon) icon.classList.remove('animate-spin');
+            }
+        }
+
+        function showSpeedtestResult(r) {
+            document.getElementById('speedtest-down').innerText = r.download_mbps.toFixed(1);
+            document.getElementById('speedtest-up').innerText = r.upload_mbps.toFixed(1);
+            document.getElementById('speedtest-ping').innerText = r.ping_ms.toFixed(0);
+            document.getElementById('speedtest-status').innerText =
+                `Last run: ${r.tested_at} · jitter ${r.jitter_ms.toFixed(1)} ms`;
+        }
+
+        // Shows the last result (kept in server memory) without starting a test.
+        async function loadSpeedtestLast() {
+            try {
+                const res = await fetch('/api/network/speedtest');
+                const data = await res.json();
+                if (data.result) showSpeedtestResult(data.result);
+            } catch (e) {
+                console.error("Speedtest last-result load failed:", e);
+            }
+        }
+
+        async function runSpeedtest() {
+            const btn = document.getElementById('speedtest-btn');
+            const statusEl = document.getElementById('speedtest-status');
+            btn.disabled = true;
+            btn.innerText = 'Testing…';
+            statusEl.innerText = 'Running — about 20 seconds';
+            try {
+                const res = await fetch('/api/network/speedtest', { method: 'POST' });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+                showSpeedtestResult(data.result);
+            } catch (e) {
+                statusEl.innerText = `Failed: ${e.message}`;
+                console.error("Speedtest failed:", e);
+            } finally {
+                btn.disabled = false;
+                btn.innerText = 'Run test';
             }
         }
 
@@ -2698,6 +2762,7 @@ async function updatePiholeData() {
         updatePackagesSection();
         updatePiholeData();
         refreshPublicIp(); // one-time on page load only — no recurring polling after this
+        loadSpeedtestLast(); // shows the previous result only; a test never starts on its own
         loadWindscribeLocations().then(loadWindscribeStatus); // status needs the dropdown populated first
         updateMediaWidget();
         updateTvStatus();
