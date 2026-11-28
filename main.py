@@ -2889,8 +2889,8 @@ async def tv_open(payload: TvOpenRequest):
 SONARR_URL = os.environ.get("SONARR_URL", "http://192.168.1.10:8989").rstrip("/")
 SONARR_API_KEY = os.environ.get("SONARR_API_KEY", "")
 SONARR_LOOKUP_LIMIT = 15
-SONARR_QUEUE_TTL = 4.0          # seconds a queue snapshot is reused; Sonarr is only polled while a browser asks
-SONARR_QUEUE_PAGE_SIZE = 200
+ARR_QUEUE_TTL = 4.0             # seconds a queue snapshot is reused; Sonarr/Radarr are only polled while a browser asks
+ARR_QUEUE_PAGE_SIZE = 200
 SONARR_MONITOR_CHOICES = ("all", "future", "missing", "firstSeason", "pilot", "none")
 
 class SonarrAddRequest(BaseModel):
@@ -2900,29 +2900,47 @@ class SonarrAddRequest(BaseModel):
     monitor: Literal["all", "future", "missing", "firstSeason", "pilot", "none"] = "all"
     search_now: bool = True
 
-async def _sonarr(method: str, path: str, params: Any = None, body: Any = None, timeout: float = 8.0) -> httpx.Response:
-    """One Sonarr API call. Returns the response untouched; _sonarr_json is the checked variant."""
-    if not SONARR_API_KEY:
-        raise HTTPException(status_code=503, detail="Sonarr isn't configured - set SONARR_URL and SONARR_API_KEY in .env")
+async def _arr_call(label: str, base_url: str, api_key: str, env_name: str, method: str, path: str,
+                    params: Any = None, body: Any = None, timeout: float = 8.0) -> httpx.Response:
+    """One call to a Sonarr/Radarr/Seerr-style API (X-Api-Key header). Returns the response untouched;
+    _arr_json_call is the checked variant."""
+    if not api_key:
+        raise HTTPException(status_code=503, detail=f"{label} isn't configured - set {label.upper()}_URL and {env_name} in .env")
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             return await client.request(
-                method, f"{SONARR_URL}{path}", params=params, json=body,
-                headers={"X-Api-Key": SONARR_API_KEY, "Accept": "application/json"},
+                method, f"{base_url}{path}", params=params, json=body,
+                headers={"X-Api-Key": api_key, "Accept": "application/json"},
             )
     except httpx.HTTPError:
-        raise HTTPException(status_code=502, detail="Sonarr unreachable - check SONARR_URL") from None
+        raise HTTPException(status_code=502, detail=f"{label} unreachable - check {label.upper()}_URL") from None
 
-async def _sonarr_json(method: str, path: str, params: Any = None, body: Any = None, timeout: float = 8.0) -> Any:
-    res = await _sonarr(method, path, params=params, body=body, timeout=timeout)
+async def _arr_json_call(label: str, base_url: str, api_key: str, env_name: str, method: str, path: str,
+                         params: Any = None, body: Any = None, timeout: float = 8.0) -> Any:
+    res = await _arr_call(label, base_url, api_key, env_name, method, path, params=params, body=body, timeout=timeout)
     if res.status_code in (401, 403):
-        raise HTTPException(status_code=502, detail="Sonarr rejected the API key - check SONARR_API_KEY")
+        raise HTTPException(status_code=502, detail=f"{label} rejected the API key - check {env_name}")
     if not 200 <= res.status_code < 300:
-        raise HTTPException(status_code=502, detail=f"Sonarr returned HTTP {res.status_code}")
+        raise HTTPException(status_code=502, detail=f"{label} returned HTTP {res.status_code}")
     try:
         return res.json()
     except ValueError:
-        raise HTTPException(status_code=502, detail="Sonarr returned something that isn't JSON - check SONARR_URL") from None
+        raise HTTPException(status_code=502, detail=f"{label} returned something that isn't JSON - check {label.upper()}_URL") from None
+
+async def _sonarr(method: str, path: str, params: Any = None, body: Any = None, timeout: float = 8.0) -> httpx.Response:
+    return await _arr_call("Sonarr", SONARR_URL, SONARR_API_KEY, "SONARR_API_KEY", method, path, params, body, timeout)
+
+async def _sonarr_json(method: str, path: str, params: Any = None, body: Any = None, timeout: float = 8.0) -> Any:
+    return await _arr_json_call("Sonarr", SONARR_URL, SONARR_API_KEY, "SONARR_API_KEY", method, path, params, body, timeout)
+
+def _image_response(res: httpx.Response) -> Response:
+    """Pass an upstream poster on to the browser, or a clean 404/502 when there isn't one."""
+    ctype = res.headers.get("content-type", "")
+    if res.status_code == 404:
+        raise HTTPException(status_code=404, detail="No poster")
+    if res.status_code != 200 or not ctype.startswith("image/"):
+        raise HTTPException(status_code=502, detail="No image returned")
+    return Response(content=res.content, media_type=ctype, headers={"Cache-Control": "private, max-age=3600"})
 
 # Poster addresses for shows that are not in the library yet. They come from Sonarr's own lookup answer
 # (never from the browser), and the browser can only ask for one by TVDB id.
@@ -2953,12 +2971,7 @@ async def sonarr_poster(series_id: int = 0, tvdb: int = 0):
             raise HTTPException(status_code=404, detail="No poster")
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="Poster unreachable") from None
-    ctype = res.headers.get("content-type", "")
-    if res.status_code == 404:
-        raise HTTPException(status_code=404, detail="No poster")
-    if res.status_code != 200 or not ctype.startswith("image/"):
-        raise HTTPException(status_code=502, detail="No image returned")
-    return Response(content=res.content, media_type=ctype, headers={"Cache-Control": "private, max-age=3600"})
+    return _image_response(res)
 
 @app.get("/api/sonarr/options")
 async def sonarr_options():
@@ -3000,6 +3013,7 @@ async def sonarr_lookup(q: str = ""):
             "overview": overview[:220] + ("..." if len(overview) > 220 else ""),
             "in_library": bool(s.get("id")),
             "series_id": s.get("id") or 0,
+            "poster": f"/api/sonarr/poster?series_id={s['id']}" if s.get("id") else f"/api/sonarr/poster?tvdb={tvdb}",
         })
     return {"items": items}
 
@@ -3071,6 +3085,147 @@ async def sonarr_add(payload: SonarrAddRequest):
         raise HTTPException(status_code=502, detail="Sonarr rejected the API key - check SONARR_API_KEY")
     raise HTTPException(status_code=502, detail=f"Sonarr returned HTTP {res.status_code}")
 
+# --- Radarr: add a movie (its download queue and health checks are folded into the shared code below) ---
+# Optional integration, same shape as Sonarr: with no RADARR_API_KEY the widgets say Radarr isn't configured.
+RADARR_URL = os.environ.get("RADARR_URL", "http://192.168.1.10:7878").rstrip("/")
+RADARR_API_KEY = os.environ.get("RADARR_API_KEY", "")
+RADARR_LOOKUP_LIMIT = 15
+RADARR_MONITOR_CHOICES = ("movieOnly", "movieAndCollection", "none")
+
+class RadarrAddRequest(BaseModel):
+    tmdb_id: int
+    root_folder_path: str
+    quality_profile_id: int
+    monitor: Literal["movieOnly", "movieAndCollection", "none"] = "movieOnly"
+    # "released" avoids grabbing cam/telesync copies of something still in cinemas.
+    minimum_availability: Literal["announced", "inCinemas", "released"] = "released"
+    search_now: bool = True
+
+async def _radarr(method: str, path: str, params: Any = None, body: Any = None, timeout: float = 8.0) -> httpx.Response:
+    return await _arr_call("Radarr", RADARR_URL, RADARR_API_KEY, "RADARR_API_KEY", method, path, params, body, timeout)
+
+async def _radarr_json(method: str, path: str, params: Any = None, body: Any = None, timeout: float = 8.0) -> Any:
+    return await _arr_json_call("Radarr", RADARR_URL, RADARR_API_KEY, "RADARR_API_KEY", method, path, params, body, timeout)
+
+# Poster addresses for movies that are not in the library yet, taken from Radarr's own lookup answer.
+_radarr_poster_urls: Dict[int, str] = {}
+
+def _remember_radarr_poster(tmdb_id: Any, images: Any) -> None:
+    for img in images or []:
+        url = str(img.get("remoteUrl") or "")
+        if img.get("coverType") == "poster" and url.startswith("https://"):
+            if len(_radarr_poster_urls) > 300:
+                _radarr_poster_urls.clear()
+            _radarr_poster_urls[int(tmdb_id)] = url
+            return
+
+@app.get("/api/radarr/poster")
+async def radarr_poster(movie_id: int = 0, tmdb: int = 0):
+    """Poster for a movie: Radarr's own cover cache for one already in the library (movie_id), or the remote
+    image Radarr's lookup pointed at for one that isn't (tmdb). Sent through this app so the browser needs
+    no route to Radarr and the API key never leaves the server."""
+    try:
+        if movie_id > 0:
+            res = await _radarr("GET", f"/MediaCover/{movie_id}/poster-250.jpg", timeout=6.0)
+        elif tmdb in _radarr_poster_urls:
+            async with httpx.AsyncClient(timeout=6.0, follow_redirects=False) as client:
+                res = await client.get(_radarr_poster_urls[tmdb])
+        else:
+            raise HTTPException(status_code=404, detail="No poster")
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="Poster unreachable") from None
+    return _image_response(res)
+
+@app.get("/api/radarr/options")
+async def radarr_options():
+    """What the Add Movie widget offers: Radarr's root folders and quality profiles."""
+    roots, profiles = await asyncio.gather(
+        _radarr_json("GET", "/api/v3/rootfolder"),
+        _radarr_json("GET", "/api/v3/qualityprofile"),
+    )
+    return {
+        "root_folders": [
+            {"path": r.get("path"), "free_gb": round((r.get("freeSpace") or 0) / 1024 ** 3, 1)}
+            for r in roots if r.get("path")
+        ],
+        "quality_profiles": [{"id": p.get("id"), "name": p.get("name")} for p in profiles if p.get("id") is not None],
+        "monitor": list(RADARR_MONITOR_CHOICES),
+    }
+
+@app.get("/api/radarr/lookup")
+async def radarr_lookup(q: str = ""):
+    """Search for a movie to add. Radarr also understands tmdb:<id> and imdb:<id> as the term."""
+    term = q.strip()[:80]
+    if len(term) < 2:
+        return {"items": []}
+    found = await _radarr_json("GET", "/api/v3/movie/lookup", params={"term": term}, timeout=15.0)
+    items = []
+    for m in found[:RADARR_LOOKUP_LIMIT]:
+        tmdb = m.get("tmdbId")
+        if not tmdb:
+            continue
+        _remember_radarr_poster(tmdb, m.get("images"))
+        overview = (m.get("overview") or "").strip()
+        items.append({
+            "tmdb_id": tmdb,
+            "title": m.get("title") or "Untitled",
+            "year": m.get("year") or 0,
+            "network": m.get("studio") or "",
+            "status": m.get("status") or "",
+            "runtime": m.get("runtime") or 0,
+            "overview": overview[:220] + ("..." if len(overview) > 220 else ""),
+            "in_library": bool(m.get("id")),
+            "movie_id": m.get("id") or 0,
+            "poster": f"/api/radarr/poster?movie_id={m['id']}" if m.get("id") else f"/api/radarr/poster?tmdb={tmdb}",
+        })
+    return {"items": items}
+
+@app.post("/api/radarr/add")
+async def radarr_add(payload: RadarrAddRequest):
+    roots, profiles = await asyncio.gather(
+        _radarr_json("GET", "/api/v3/rootfolder"),
+        _radarr_json("GET", "/api/v3/qualityprofile"),
+    )
+    if payload.root_folder_path not in {r.get("path") for r in roots}:
+        raise HTTPException(status_code=400, detail="That root folder isn't one of Radarr's")
+    if payload.quality_profile_id not in {p.get("id") for p in profiles}:
+        raise HTTPException(status_code=400, detail="That quality profile isn't one of Radarr's")
+
+    # Radarr wants its own lookup object back with the choices filled in, so look the movie up again
+    # by id here rather than trusting a description of it from the browser.
+    found = await _radarr_json("GET", "/api/v3/movie/lookup", params={"term": f"tmdb:{payload.tmdb_id}"}, timeout=15.0)
+    movie = next((m for m in found if m.get("tmdbId") == payload.tmdb_id), None)
+    if not movie:
+        raise HTTPException(status_code=404, detail="Radarr couldn't find that movie")
+    if movie.get("id"):
+        raise HTTPException(status_code=409, detail=f"{movie.get('title')} is already in Radarr")
+
+    body = dict(movie)
+    body.pop("id", None)
+    body.update(
+        qualityProfileId=payload.quality_profile_id,
+        rootFolderPath=payload.root_folder_path,
+        monitored=payload.monitor != "none",
+        minimumAvailability=payload.minimum_availability,
+        addOptions={"monitor": payload.monitor, "searchForMovie": payload.search_now},
+    )
+    res = await _radarr("POST", "/api/v3/movie", body=body, timeout=20.0)
+    if res.status_code in (200, 201):
+        title = res.json().get("title") or movie.get("title")
+        print(f"[Radarr] added {title!r} (monitor={payload.monitor}, search_now={payload.search_now})")
+        return {"status": "added", "title": title, "searching": payload.search_now}
+    if res.status_code == 400:
+        try:
+            reasons = "; ".join(str(e.get("errorMessage")) for e in res.json() if e.get("errorMessage"))
+        except Exception:
+            reasons = ""
+        if "already" in reasons.lower():
+            raise HTTPException(status_code=409, detail=f"{movie.get('title')} is already in Radarr")
+        raise HTTPException(status_code=400, detail=reasons or "Radarr refused to add that movie")
+    if res.status_code in (401, 403):
+        raise HTTPException(status_code=502, detail="Radarr rejected the API key - check RADARR_API_KEY")
+    raise HTTPException(status_code=502, detail=f"Radarr returned HTTP {res.status_code}")
+
 # qBittorrent state -> (label, kind). The kind picks the progress-bar colour in the widget.
 _QB_STATE = {
     "downloading": ("Downloading", "active"), "forcedDL": ("Downloading", "active"),
@@ -3084,8 +3239,8 @@ _QB_STATE = {
     "queuedUP": ("Seeding", "done"), "pausedUP": ("Complete", "done"), "stoppedUP": ("Complete", "done"),
     "error": ("Error", "error"), "missingFiles": ("Missing files", "error"),
 }
-# Once the torrent is finished, what Sonarr is doing with it is the more useful thing to show.
-_SONARR_STATE = {
+# Once the torrent is finished, what Sonarr/Radarr is doing with it is the more useful thing to show.
+_ARR_IMPORT_STATE = {
     "importPending": ("Import pending", "checking"), "importing": ("Importing", "checking"),
     "importBlocked": ("Import blocked", "error"), "failedPending": ("Failed", "error"),
     "failed": ("Failed", "error"),
@@ -3118,7 +3273,7 @@ def _fmt_eta(seconds: Any) -> str:
         return f"{m}m {sec:02d}s"
     return f"{sec}s"
 
-def _sonarr_timeleft_seconds(text: Any) -> Optional[int]:
+def _arr_timeleft_seconds(text: Any) -> Optional[int]:
     m = re.fullmatch(r"(?:(\d+)\.)?(\d+):(\d{2}):(\d{2})(?:\.\d+)?", str(text or ""))
     if not m:
         return None
@@ -3161,31 +3316,61 @@ async def _qb_get_json(path: str, params: Any = None) -> Any:
         return None
     return None
 
-async def _build_sonarr_queue() -> Dict[str, Any]:
-    data = await _sonarr_json("GET", "/api/v3/queue", params={
-        "page": 1, "pageSize": SONARR_QUEUE_PAGE_SIZE, "includeSeries": "true", "includeEpisode": "true",
-    }, timeout=10.0)
+def _movie_label(movie: Dict[str, Any]) -> str:
+    return str(movie.get("year") or "") if movie.get("year") else ""
+
+async def _queue_records(app_name: str) -> List[Dict[str, Any]]:
+    """The raw queue records of one app (Sonarr with its show and episode attached, Radarr with its movie)."""
+    if app_name == "sonarr":
+        data = await _sonarr_json("GET", "/api/v3/queue", params={
+            "page": 1, "pageSize": ARR_QUEUE_PAGE_SIZE, "includeSeries": "true", "includeEpisode": "true",
+        }, timeout=10.0)
+    else:
+        data = await _radarr_json("GET", "/api/v3/queue", params={
+            "page": 1, "pageSize": ARR_QUEUE_PAGE_SIZE, "includeMovie": "true",
+        }, timeout=10.0)
     records = data.get("records") if isinstance(data, dict) else data
-    records = records or []
+    return records or []
+
+async def _build_queue() -> Dict[str, Any]:
+    apps = [name for name, key in (("sonarr", SONARR_API_KEY), ("radarr", RADARR_API_KEY)) if key]
+    if not apps:
+        raise HTTPException(status_code=503, detail="Neither Sonarr nor Radarr is configured - set SONARR_API_KEY and/or RADARR_API_KEY in .env")
+    results = await asyncio.gather(*(_queue_records(a) for a in apps), return_exceptions=True)
+    records_by_app: Dict[str, List[Dict[str, Any]]] = {}
+    errors: List[str] = []
+    for name, result in zip(apps, results):
+        if isinstance(result, HTTPException):
+            errors.append(str(result.detail))        # one app being down shouldn't hide the other's queue
+        elif isinstance(result, BaseException):
+            raise result
+        else:
+            records_by_app[name] = result
+    if not records_by_app:
+        raise HTTPException(status_code=502, detail="; ".join(errors))
 
     # A season pack is one download with a queue record per episode; fold those into one row.
-    groups: Dict[str, Dict[str, Any]] = {}
-    for rec in records:
-        key = str(rec.get("downloadId") or f"queue-{rec.get('id')}")
-        g = groups.get(key)
-        if not g:
-            series = rec.get("series") or {}
-            g = groups[key] = {"rec": rec, "series": series, "episodes": [], "messages": []}
-        if rec.get("episode"):
-            g["episodes"].append(rec["episode"])
-        for sm in rec.get("statusMessages") or []:
-            text = (sm.get("messages") or [sm.get("title")])[0]
-            if text and text not in g["messages"]:
-                g["messages"].append(text)
-        if rec.get("errorMessage") and rec["errorMessage"] not in g["messages"]:
-            g["messages"].append(rec["errorMessage"])
+    groups: Dict[Any, Dict[str, Any]] = {}
+    for name, records in records_by_app.items():
+        for rec in records:
+            dl_id = str(rec.get("downloadId") or f"queue-{name}-{rec.get('id')}")
+            g = groups.get((name, dl_id))
+            if not g:
+                g = groups[(name, dl_id)] = {
+                    "app": name, "dl_id": dl_id, "rec": rec, "episodes": [], "messages": [],
+                    "media": (rec.get("series") if name == "sonarr" else rec.get("movie")) or {},
+                }
+            if rec.get("episode"):
+                g["episodes"].append(rec["episode"])
+            for sm in rec.get("statusMessages") or []:
+                text = (sm.get("messages") or [sm.get("title")])[0]
+                if text and text not in g["messages"]:
+                    g["messages"].append(text)
+            if rec.get("errorMessage") and rec["errorMessage"] not in g["messages"]:
+                g["messages"].append(rec["errorMessage"])
 
-    hashes = sorted({k.lower() for k in groups if _HASH_RE.fullmatch(k)})
+    # One qBittorrent lookup covers every download from both apps.
+    hashes = sorted({g["dl_id"].lower() for g in groups.values() if _HASH_RE.fullmatch(g["dl_id"])})
     qb_ok, torrents = False, {}
     if hashes:
         found = await _qb_get_json("/api/v2/torrents/info", {"hashes": "|".join(hashes)})
@@ -3194,14 +3379,14 @@ async def _build_sonarr_queue() -> Dict[str, Any]:
             torrents = {str(t.get("hash", "")).lower(): t for t in found}
 
     items, total_speed, active, warnings = [], 0, 0, 0
-    for key, g in groups.items():
-        rec, series = g["rec"], g["series"]
-        t = torrents.get(key.lower())
+    for (name, dl_id), g in groups.items():
+        rec, media = g["rec"], g["media"]
+        t = torrents.get(dl_id.lower())
         size = rec.get("size") or 0
         left = rec.get("sizeleft") or 0
         progress = (size - left) / size * 100 if size else 0.0
         dl_speed = up_speed = seeds = peers = 0
-        eta = _fmt_eta(_sonarr_timeleft_seconds(rec.get("timeleft")))
+        eta = _fmt_eta(_arr_timeleft_seconds(rec.get("timeleft")))
         label, kind = "Waiting", "queued"
         if t:
             progress = float(t.get("progress") or 0) * 100
@@ -3211,18 +3396,25 @@ async def _build_sonarr_queue() -> Dict[str, Any]:
             label, kind = _QB_STATE.get(t.get("state"), (str(t.get("state") or "Unknown"), "stalled"))
         elif rec.get("trackedDownloadState") == "downloading":
             label, kind = "Downloading", "active"
-        sonarr_state = _SONARR_STATE.get(rec.get("trackedDownloadState"))
-        if sonarr_state and (not t or kind in ("done", "checking")):
-            label, kind = sonarr_state
+        import_state = _ARR_IMPORT_STATE.get(rec.get("trackedDownloadState"))
+        if import_state and (not t or kind in ("done", "checking")):
+            label, kind = import_state
         warn = rec.get("trackedDownloadStatus") in ("warning", "error") or bool(g["messages"]) or kind == "error"
         total_speed += dl_speed
         active += kind == "active"
         warnings += warn
+        if name == "sonarr":
+            media_id = rec.get("seriesId") or media.get("id") or 0
+            title = media.get("title") or rec.get("title") or "Unknown show"
+            detail = _episode_label(g["episodes"])
+            poster = f"/api/sonarr/poster?series_id={media_id}" if media_id else ""
+        else:
+            media_id = rec.get("movieId") or media.get("id") or 0
+            title = media.get("title") or rec.get("title") or "Unknown movie"
+            detail = _movie_label(media)
+            poster = f"/api/radarr/poster?movie_id={media_id}" if media_id else ""
         items.append({
-            "key": key,
-            "series": series.get("title") or rec.get("title") or "Unknown show",
-            "series_id": rec.get("seriesId") or series.get("id") or 0,
-            "episodes": _episode_label(g["episodes"]),
+            "key": f"{name}:{dl_id}", "app": name, "title": title, "detail": detail, "poster": poster,
             "release": rec.get("title") or "",
             "state": label, "kind": kind, "warning": warn, "message": g["messages"][0] if g["messages"] else "",
             "progress": round(min(max(progress, 0.0), 100.0), 1),
@@ -3233,25 +3425,26 @@ async def _build_sonarr_queue() -> Dict[str, Any]:
         })
     return {
         "items": items,
+        "errors": errors,
         "qb_ok": qb_ok or not hashes,
         "vpn": {"status": wireguard_cache.get("status", "inactive"), "endpoint": wireguard_cache.get("endpoint", "--")},
         "summary": {"total": len(items), "active": active, "warnings": warnings, "dl_speed": format_speed(total_speed)},
     }
 
-_sonarr_queue_cache: Dict[str, Any] = {"at": 0.0, "data": None}
-_sonarr_queue_lock = asyncio.Lock()
+_queue_cache: Dict[str, Any] = {"at": 0.0, "data": None}
+_queue_lock = asyncio.Lock()
 
-@app.get("/api/sonarr/queue")
-async def sonarr_queue():
-    """Sonarr's download queue with each torrent's live progress, speed and state from qBittorrent.
-    Sonarr links a queue entry to its torrent through the torrent hash (its downloadId). The snapshot is
-    shared for a few seconds, so several open tabs cost Sonarr and qBittorrent one request each, and nothing
-    is polled while no browser is looking."""
-    async with _sonarr_queue_lock:
-        if _sonarr_queue_cache["data"] is None or time.monotonic() - _sonarr_queue_cache["at"] >= SONARR_QUEUE_TTL:
-            _sonarr_queue_cache["data"] = await _build_sonarr_queue()
-            _sonarr_queue_cache["at"] = time.monotonic()
-        return _sonarr_queue_cache["data"]
+@app.get("/api/queue")
+async def download_queue():
+    """Sonarr's and Radarr's download queues with each torrent's live progress, speed and state from
+    qBittorrent. Both apps link a queue entry to its torrent through the torrent hash (its downloadId).
+    The snapshot is shared for a few seconds, so several open tabs cost the apps and qBittorrent one request
+    each, and nothing is polled while no browser is looking."""
+    async with _queue_lock:
+        if _queue_cache["data"] is None or time.monotonic() - _queue_cache["at"] >= ARR_QUEUE_TTL:
+            _queue_cache["data"] = await _build_queue()
+            _queue_cache["at"] = time.monotonic()
+        return _queue_cache["data"]
 
 # --- Sonarr calendar ---
 SONARR_CALENDAR_TTL = 300.0     # airing times don't change by the minute
@@ -3301,7 +3494,147 @@ async def sonarr_calendar(days: int = 7):
             c.update(data=await _build_sonarr_calendar(days), days=days, at=time.monotonic())
         return c["data"]
 
-# --- Health banner: Sonarr + Prowlarr health checks, and the tunnel/torrent combination ---
+# --- Seerr: the request list, with approve / decline ---
+# Optional integration. Seerr's API key (Settings -> General) is an admin key, so it can approve and decline;
+# it stays on the server like the others.
+SEERR_URL = os.environ.get("SEERR_URL", "http://192.168.1.10:5055").rstrip("/")
+SEERR_API_KEY = os.environ.get("SEERR_API_KEY", "")
+SEERR_PENDING_LIMIT = 20
+SEERR_RECENT_LIMIT = 8
+SEERR_REQUESTS_TTL = 10.0
+SEERR_IMAGE_BASE = "https://image.tmdb.org/t/p/w185"
+
+class SeerrActionRequest(BaseModel):
+    action: Literal["approve", "decline"]
+
+async def _seerr(method: str, path: str, params: Any = None, body: Any = None, timeout: float = 8.0) -> httpx.Response:
+    return await _arr_call("Seerr", SEERR_URL, SEERR_API_KEY, "SEERR_API_KEY", method, path, params, body, timeout)
+
+async def _seerr_json(method: str, path: str, params: Any = None, body: Any = None, timeout: float = 8.0) -> Any:
+    return await _arr_json_call("Seerr", SEERR_URL, SEERR_API_KEY, "SEERR_API_KEY", method, path, params, body, timeout)
+
+# A Seerr request only carries the TMDB id, so titles and poster paths are looked up once and remembered.
+# The browser can ask for a poster only by (type, tmdb id), and only ones Seerr itself has told us about.
+_seerr_titles: Dict[Any, Dict[str, Any]] = {}
+_SEERR_POSTER_PATH_RE = re.compile(r"/[A-Za-z0-9_.\-]{1,80}")
+
+async def _seerr_title(media_type: str, tmdb_id: int) -> Dict[str, Any]:
+    key = (media_type, tmdb_id)
+    if key in _seerr_titles:
+        return _seerr_titles[key]
+    kind = "movie" if media_type == "movie" else "tv"
+    try:
+        d = await _seerr_json("GET", f"/api/v1/{kind}/{tmdb_id}", timeout=8.0)
+    except HTTPException:
+        return {"title": f"{'Movie' if kind == 'movie' else 'Show'} #{tmdb_id}", "year": "", "poster_path": ""}   # not cached: try again next time
+    date = str(d.get("releaseDate") or d.get("firstAirDate") or "")
+    info = {
+        "title": d.get("title") or d.get("name") or f"#{tmdb_id}",
+        "year": date[:4],
+        "poster_path": d.get("posterPath") or "",
+    }
+    if len(_seerr_titles) > 500:
+        _seerr_titles.clear()
+    _seerr_titles[key] = info
+    return info
+
+# Seerr's request status, then its media status (what has actually happened to the title since).
+_SEERR_REQUEST_STATUS = {1: ("Pending", "pending"), 2: ("Approved", "approved"), 3: ("Declined", "declined"),
+                         4: ("Failed", "declined"), 5: ("Completed", "available")}
+_SEERR_MEDIA_STATUS = {3: ("Processing", "approved"), 4: ("Partially available", "available"), 5: ("Available", "available")}
+
+def _seerr_seasons_label(seasons: Any) -> str:
+    nums = sorted({s.get("seasonNumber") for s in seasons or [] if isinstance(s.get("seasonNumber"), int) and s["seasonNumber"] > 0})
+    if not nums:
+        return ""
+    if len(nums) == 1:
+        return f"Season {nums[0]}"
+    if nums[-1] - nums[0] + 1 == len(nums):
+        return f"Seasons {nums[0]}-{nums[-1]}"
+    return "Seasons " + ", ".join(str(n) for n in nums)
+
+async def _seerr_row(req: Dict[str, Any]) -> Dict[str, Any]:
+    media = req.get("media") or {}
+    media_type = req.get("type") or media.get("mediaType") or "movie"
+    tmdb_id = media.get("tmdbId") or 0
+    info = await _seerr_title(media_type, tmdb_id) if tmdb_id else {"title": "Unknown title", "year": "", "poster_path": ""}
+    label, kind = _SEERR_REQUEST_STATUS.get(req.get("status"), ("Unknown", "approved"))
+    if req.get("status") == 2:
+        label, kind = _SEERR_MEDIA_STATUS.get(media.get("status"), (label, kind))
+    who = req.get("requestedBy") or {}
+    return {
+        "id": req.get("id"),
+        "type": "movie" if media_type == "movie" else "tv",
+        "title": info["title"], "year": info["year"],
+        "seasons": _seerr_seasons_label(req.get("seasons")) if media_type != "movie" else "",
+        "is4k": bool(req.get("is4k")),
+        "requested_by": who.get("displayName") or who.get("username") or who.get("email") or "Someone",
+        "created": req.get("createdAt") or "",
+        "state": label, "kind": kind,
+        "poster": f"/api/seerr/poster?type={'movie' if media_type == 'movie' else 'tv'}&tmdb={tmdb_id}" if info["poster_path"] else "",
+    }
+
+_seerr_cache: Dict[str, Any] = {"at": 0.0, "data": None}
+_seerr_lock = asyncio.Lock()
+
+async def _build_seerr_requests() -> Dict[str, Any]:
+    pending, recent, counts = await asyncio.gather(
+        _seerr_json("GET", "/api/v1/request", params={
+            "take": SEERR_PENDING_LIMIT, "skip": 0, "filter": "pending", "sort": "added", "sortDirection": "desc"}),
+        _seerr_json("GET", "/api/v1/request", params={
+            "take": SEERR_RECENT_LIMIT + SEERR_PENDING_LIMIT, "skip": 0, "filter": "all", "sort": "modified", "sortDirection": "desc"}),
+        _seerr_json("GET", "/api/v1/request/count"),
+    )
+    pending_reqs = (pending.get("results") or [])[:SEERR_PENDING_LIMIT]
+    # The "all" list is only for what has already been dealt with; pending ones are shown above.
+    recent_reqs = [r for r in (recent.get("results") or []) if r.get("status") != 1][:SEERR_RECENT_LIMIT]
+    pending_rows, recent_rows = await asyncio.gather(
+        asyncio.gather(*(_seerr_row(r) for r in pending_reqs)),
+        asyncio.gather(*(_seerr_row(r) for r in recent_reqs)),
+    )
+    return {
+        "pending": list(pending_rows), "recent": list(recent_rows),
+        "counts": {k: int(counts.get(k) or 0) for k in ("total", "pending", "approved", "processing", "available", "declined")},
+    }
+
+@app.get("/api/seerr/requests")
+async def seerr_requests():
+    """Seerr's pending requests (with approve/decline) and the most recently handled ones. One snapshot is
+    shared for a few seconds however many tabs are open, and nothing is polled while no browser is looking."""
+    async with _seerr_lock:
+        if _seerr_cache["data"] is None or time.monotonic() - _seerr_cache["at"] >= SEERR_REQUESTS_TTL:
+            _seerr_cache.update(data=await _build_seerr_requests(), at=time.monotonic())
+        return _seerr_cache["data"]
+
+@app.post("/api/seerr/request/{request_id}")
+async def seerr_request_action(request_id: int, payload: SeerrActionRequest):
+    """Approve or decline one request. Approving makes Seerr send it on to Radarr/Sonarr."""
+    res = await _seerr("POST", f"/api/v1/request/{request_id}/{payload.action}", timeout=15.0)
+    if res.status_code in (200, 201, 204):
+        async with _seerr_lock:
+            _seerr_cache["data"] = None       # show the change on the next poll rather than after the cache expires
+        print(f"[Seerr] {payload.action}d request {request_id}")
+        return {"status": payload.action + "d", "id": request_id}
+    if res.status_code == 404:
+        raise HTTPException(status_code=404, detail="That request no longer exists")
+    if res.status_code in (401, 403):
+        raise HTTPException(status_code=502, detail="Seerr rejected the API key or it can't manage requests - check SEERR_API_KEY")
+    raise HTTPException(status_code=502, detail=f"Seerr returned HTTP {res.status_code}")
+
+@app.get("/api/seerr/poster")
+async def seerr_poster(type: Literal["movie", "tv"] = "movie", tmdb: int = 0):
+    """Poster for a request. Only the image Seerr itself named for that title is fetched (from TMDB's image host)."""
+    path = (_seerr_titles.get((type, tmdb)) or {}).get("poster_path", "")
+    if not _SEERR_POSTER_PATH_RE.fullmatch(path or ""):
+        raise HTTPException(status_code=404, detail="No poster")
+    try:
+        async with httpx.AsyncClient(timeout=6.0, follow_redirects=False) as client:
+            res = await client.get(f"{SEERR_IMAGE_BASE}{path}")
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="Poster unreachable") from None
+    return _image_response(res)
+
+# --- Health banner: Sonarr, Radarr, Prowlarr and Seerr checks, and the tunnel/torrent combination ---
 PROWLARR_URL = os.environ.get("PROWLARR_URL", "http://192.168.1.10:9696").rstrip("/")
 PROWLARR_API_KEY = os.environ.get("PROWLARR_API_KEY", "")
 ARR_HEALTH_TTL = 30.0
@@ -3335,18 +3668,22 @@ async def _arr_health(name: str, base_url: str, key: str, path: str) -> Dict[str
     return {"state": "ok", "items": items}
 
 async def _build_arr_health() -> Dict[str, Any]:
-    sonarr, prowlarr = await asyncio.gather(
-        _arr_health("Sonarr", SONARR_URL, SONARR_API_KEY, "/api/v3/health"),
-        _arr_health("Prowlarr", PROWLARR_URL, PROWLARR_API_KEY, "/api/v1/health"),
+    # Seerr has no health list of its own; asking it for the request counts shows that it is up and the key works.
+    checks = (
+        ("Sonarr", SONARR_URL, SONARR_API_KEY, "/api/v3/health"),
+        ("Radarr", RADARR_URL, RADARR_API_KEY, "/api/v3/health"),
+        ("Prowlarr", PROWLARR_URL, PROWLARR_API_KEY, "/api/v1/health"),
+        ("Seerr", SEERR_URL, SEERR_API_KEY, "/api/v1/request/count"),
     )
+    results = await asyncio.gather(*(_arr_health(*c) for c in checks))
     items: List[Dict[str, Any]] = []
-    for name, result in (("Sonarr", sonarr), ("Prowlarr", prowlarr)):
+    for (name, *_), result in zip(checks, results):
         if result["state"] == "unreachable":
             items.append({"source": name, "level": "error", "message": f"{name} can't be reached - is it running?", "url": ""})
         elif result["state"] == "bad_key":
             items.append({"source": name, "level": "error", "message": f"{name} rejected the API key", "url": ""})
         items.extend(result["items"])
-    return {"items": items, "sources": {"sonarr": sonarr["state"], "prowlarr": prowlarr["state"]}}
+    return {"items": items, "sources": {c[0].lower(): r["state"] for c, r in zip(checks, results)}}
 
 @app.get("/api/arr/health")
 async def arr_health():

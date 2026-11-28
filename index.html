@@ -101,7 +101,7 @@
                 </span>
             </div>
         </header>
-        <!-- Health banner: Sonarr / Prowlarr health checks; stays hidden while everything is fine -->
+        <!-- Health banner: Sonarr / Radarr / Prowlarr / Seerr health checks; stays hidden while everything is fine -->
         <div id="health-banner" class="hidden mb-4 sm:mb-6 rounded-xl border px-4 py-3 text-xs font-mono space-y-1.5" role="status"></div>
         <!-- Main Body: 25% | 50% | 25% -->
         <div class="grid grid-cols-1 lg:grid-cols-4 gap-4 lg:gap-6 mb-6">
@@ -526,36 +526,47 @@
 
                     <!-- Media column: finding and adding shows -->
                     <div class="contents lg:flex lg:flex-col lg:gap-6">
-                    <!-- Add Show (Sonarr) Widget -->
+                    <!-- Add Media (Sonarr shows / Radarr movies) Widget -->
                     <div class="widget-card">
-                        <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-2">
-                            <i data-lucide="tv" class="w-4 h-4 text-sky-400"></i> Add Show
-                        </h2>
+                        <div class="flex items-center justify-between gap-2 mb-3">
+                            <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase flex items-center gap-2">
+                                <i data-lucide="tv" class="w-4 h-4 text-sky-400"></i> Add Media
+                            </h2>
+                            <div class="flex rounded-md overflow-hidden border border-slate-700 text-[10px] font-mono shrink-0" role="group" aria-label="What to add">
+                                <button type="button" data-sn-app="sonarr" aria-pressed="true" class="px-2.5 py-1 cursor-pointer bg-emerald-600 text-white">Shows</button>
+                                <button type="button" data-sn-app="radarr" aria-pressed="false" class="px-2.5 py-1 cursor-pointer border-l border-slate-700 bg-slate-900/60 text-slate-400 hover:text-slate-200">Movies</button>
+                            </div>
+                        </div>
                         <div class="space-y-2">
                             <input id="sn-search" type="search" placeholder="Search for a show to add to Sonarr..." autocomplete="off"
                                    class="w-full rounded-lg bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500">
                             <div class="grid grid-cols-2 gap-2">
-                                <select id="sn-root" aria-label="Root folder" title="Where the show is stored"
+                                <select id="sn-root" aria-label="Root folder" title="Where it is stored"
                                         class="min-w-0 rounded-lg bg-slate-900/60 border border-slate-700 px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"></select>
                                 <select id="sn-profile" aria-label="Quality profile" title="Quality profile"
                                         class="min-w-0 rounded-lg bg-slate-900/60 border border-slate-700 px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"></select>
-                                <select id="sn-monitor" aria-label="Which episodes to monitor" title="Which episodes to monitor"
-                                        class="min-w-0 rounded-lg bg-slate-900/60 border border-slate-700 px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500">
-                                    <option value="all">Monitor: all episodes</option>
-                                    <option value="future">Monitor: future episodes</option>
-                                    <option value="missing">Monitor: missing episodes</option>
-                                    <option value="firstSeason">Monitor: first season</option>
-                                    <option value="pilot">Monitor: pilot only</option>
-                                    <option value="none">Monitor: none</option>
-                                </select>
+                                <select id="sn-monitor" aria-label="What to monitor" title="What to monitor"
+                                        class="min-w-0 rounded-lg bg-slate-900/60 border border-slate-700 px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"></select>
                                 <label class="flex items-center gap-2 text-xs text-slate-300 px-1 cursor-pointer">
                                     <input id="sn-now" type="checkbox" checked class="accent-emerald-500"> Search right away
                                 </label>
                             </div>
                             <div id="sn-msg" class="hidden text-[11px] font-mono break-words"></div>
                             <div id="sn-list" class="space-y-2 max-h-[26rem] overflow-y-auto pr-1">
-                                <div class="text-xs text-slate-500 py-2">Type a show name to search</div>
+                                <div class="text-xs text-slate-500 py-2">Type a name to search</div>
                             </div>
+                        </div>
+                    </div>
+
+                    <!-- Media Requests (Seerr) Widget -->
+                    <div class="widget-card">
+                        <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-2">
+                            <i data-lucide="inbox" class="w-4 h-4 text-sky-400"></i> Media Requests
+                        </h2>
+                        <div class="space-y-2">
+                            <div id="sr-summary" class="text-[11px] font-mono text-slate-400">Loading...</div>
+                            <div id="sr-msg" class="hidden text-[11px] font-mono break-words"></div>
+                            <div id="sr-list" class="space-y-2 max-h-[26rem] overflow-y-auto pr-1"></div>
                         </div>
                     </div>
 
@@ -599,10 +610,10 @@
                         </div>
                     </div>
 
-                    <!-- Sonarr Queue Widget -->
+                    <!-- Download Queue (Sonarr + Radarr) Widget -->
                     <div class="widget-card">
                         <h2 class="text-sm font-semibold tracking-wide text-slate-400 uppercase mb-3 flex items-center gap-2">
-                            <i data-lucide="download" class="w-4 h-4 text-sky-400"></i> Sonarr Queue
+                            <i data-lucide="download" class="w-4 h-4 text-sky-400"></i> Download Queue
                         </h2>
                         <div class="space-y-2">
                             <div class="flex items-center justify-between gap-2">
@@ -2080,20 +2091,43 @@ async function updatePiholeData() {
             loadCastLibrary();
         }
 
-        // --- Add Show: search for a show and add it to Sonarr ---
-        // The browser only talks to this app; Sonarr's address and API key stay on the server.
-        let snSeq = 0, snMsgTimer = null, snSearchTimer = null, snBusy = false;
-        const SN_PREFS_KEY = 'dashboard.sonarrAdd';
+        // --- Add Media: search for a show (Sonarr) or a movie (Radarr) and add it ---
+        // The browser only talks to this app; the apps' addresses and API keys stay on the server.
+        const SN_APPS = {
+            sonarr: {
+                label: 'Sonarr', noun: 'show', idField: 'tvdb_id', searchingFor: 'episodes',
+                monitor: [['all', 'Monitor: all episodes'], ['future', 'Monitor: future episodes'], ['missing', 'Monitor: missing episodes'],
+                          ['firstSeason', 'Monitor: first season'], ['pilot', 'Monitor: pilot only'], ['none', 'Monitor: none']]
+            },
+            radarr: {
+                label: 'Radarr', noun: 'movie', idField: 'tmdb_id', searchingFor: 'the movie',
+                monitor: [['movieOnly', 'Monitor: movie only'], ['movieAndCollection', 'Monitor: movie + collection'], ['none', 'Monitor: none']]
+            }
+        };
+        let snApp = 'sonarr', snSeq = 0, snMsgTimer = null, snSearchTimer = null, snBusy = false;
+        const snOptions = {};   // each app's root folders and quality profiles, fetched once
+        const SN_PREFS_KEY = 'dashboard.addMedia';
+        const SN_OLD_PREFS_KEY = 'dashboard.sonarrAdd';   // from before Radarr: Sonarr's choices only
 
         function snPrefs() {
-            try { return JSON.parse(localStorage.getItem(SN_PREFS_KEY)) || {}; } catch (e) { return {}; }
+            try {
+                const p = JSON.parse(localStorage.getItem(SN_PREFS_KEY));
+                if (p) return p;
+                const old = JSON.parse(localStorage.getItem(SN_OLD_PREFS_KEY));
+                return old ? { app: 'sonarr', sonarr: old } : {};
+            } catch (e) { return {}; }
         }
-        function snSavePrefs() {
-            const prefs = {
+        function snStorePrefs(prefs) {
+            try { localStorage.setItem(SN_PREFS_KEY, JSON.stringify(prefs)); } catch (e) { /* private mode etc. */ }
+        }
+        function snSavePrefs() {   // the choices on screen belong to the app that is showing
+            const prefs = snPrefs();
+            prefs.app = snApp;
+            prefs[snApp] = {
                 root: document.getElementById('sn-root').value, profile: document.getElementById('sn-profile').value,
                 monitor: document.getElementById('sn-monitor').value, now: document.getElementById('sn-now').checked
             };
-            try { localStorage.setItem(SN_PREFS_KEY, JSON.stringify(prefs)); } catch (e) { /* private mode etc. */ }
+            snStorePrefs(prefs);
         }
 
         function showSnMessage(text, isError, sticky) {
@@ -2106,16 +2140,16 @@ async function updatePiholeData() {
         }
 
         function snRowHtml(it) {
-            const meta = [it.year || '', it.network, it.seasons ? `${it.seasons} season${it.seasons === 1 ? '' : 's'}` : '', it.status]
+            const cfg = SN_APPS[snApp];
+            const runtime = it.runtime ? `${Math.floor(it.runtime / 60) ? Math.floor(it.runtime / 60) + 'h ' : ''}${it.runtime % 60}m` : '';
+            const meta = [it.year || '', it.network, it.seasons ? `${it.seasons} season${it.seasons === 1 ? '' : 's'}` : '', runtime, it.status]
                 .filter(Boolean).join(' · ');
-            const poster = it.in_library && it.series_id
-                ? `/api/sonarr/poster?series_id=${encodeURIComponent(it.series_id)}`
-                : `/api/sonarr/poster?tvdb=${encodeURIComponent(it.tvdb_id)}`;
+            const inLib = `<span class="text-[10px] font-mono text-emerald-400 shrink-0 px-2">In ${cfg.label}</span>`;
             const action = it.in_library
-                ? '<span class="text-[10px] font-mono text-emerald-400 shrink-0 px-2">In Sonarr</span>'
-                : `<button type="button" class="tv-btn px-3 shrink-0" data-sn-add="${escapeHtml(it.tvdb_id)}" data-sn-name="${escapeHtml(it.title)}">Add</button>`;
+                ? inLib
+                : `<button type="button" class="tv-btn px-3 shrink-0" data-sn-add="${escapeHtml(it[cfg.idField])}" data-sn-name="${escapeHtml(it.title)}">Add</button>`;
             return `<div class="flex items-start gap-3 p-2 rounded-lg bg-slate-900/40 border border-slate-700/40">
-                <img class="cast-poster w-10 h-14 rounded object-cover bg-slate-800 shrink-0" loading="lazy" alt="" src="${poster}">
+                <img class="cast-poster w-10 h-14 rounded object-cover bg-slate-800 shrink-0" loading="lazy" alt="" src="${escapeHtml(it.poster || '')}">
                 <div class="min-w-0 flex-1">
                     <div class="text-sm text-slate-200 truncate">${escapeHtml(it.title)}</div>
                     <div class="text-[10px] font-mono text-slate-500 truncate">${escapeHtml(meta)}</div>
@@ -2128,16 +2162,17 @@ async function updatePiholeData() {
         async function snSearch() {
             const list = document.getElementById('sn-list');
             if (!list) return;
+            const app = snApp, cfg = SN_APPS[app];
             const q = document.getElementById('sn-search').value.trim();
             if (q.length < 2) {
                 snSeq++;
-                list.innerHTML = '<div class="text-xs text-slate-500 py-2">Type a show name to search</div>';
+                list.innerHTML = '<div class="text-xs text-slate-500 py-2">Type a name to search</div>';
                 return;
             }
-            const seq = ++snSeq;   // ignore answers that arrive after a newer search was started
+            const seq = ++snSeq;   // ignore answers that arrive after a newer search (or a switch of app) was started
             list.innerHTML = '<div class="text-xs text-slate-500 py-2">Searching...</div>';
             try {
-                const res = await fetch('/api/sonarr/lookup?' + new URLSearchParams({ q }).toString());
+                const res = await fetch(`/api/${app}/lookup?` + new URLSearchParams({ q }).toString());
                 const body = await res.json().catch(() => ({}));
                 if (seq !== snSeq) return;
                 if (!res.ok) {
@@ -2146,15 +2181,16 @@ async function updatePiholeData() {
                 }
                 list.innerHTML = (body.items || []).length
                     ? body.items.map(snRowHtml).join('')
-                    : '<div class="text-xs text-slate-500 py-2">Nothing found</div>';
+                    : `<div class="text-xs text-slate-500 py-2">No ${cfg.noun} found</div>`;
                 list.scrollTop = 0;
             } catch (e) {
                 if (seq === snSeq) list.innerHTML = '<div class="text-xs text-rose-400 py-2">Could not reach the dashboard</div>';
             }
         }
 
-        async function snAdd(tvdbId, name, btn) {
+        async function snAdd(id, name, btn) {
             if (snBusy) return;
+            const app = snApp, cfg = SN_APPS[app];
             const root = document.getElementById('sn-root').value;
             const profile = document.getElementById('sn-profile').value;
             if (!root || !profile) {
@@ -2165,21 +2201,21 @@ async function updatePiholeData() {
             btn.disabled = true;
             showSnMessage(`Adding "${name}"...`, false, true);
             try {
-                const res = await fetch('/api/sonarr/add', {
+                const res = await fetch(`/api/${app}/add`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        tvdb_id: Number(tvdbId), root_folder_path: root, quality_profile_id: Number(profile),
+                        [cfg.idField]: Number(id), root_folder_path: root, quality_profile_id: Number(profile),
                         monitor: document.getElementById('sn-monitor').value, search_now: document.getElementById('sn-now').checked
                     })
                 });
                 const d = await res.json().catch(() => ({}));
                 if (res.ok) {
-                    showSnMessage(`Added ${d.title || name}${d.searching ? ' - searching for episodes' : ''}`, false);
-                    btn.outerHTML = '<span class="text-[10px] font-mono text-emerald-400 shrink-0 px-2">Added</span>';
+                    showSnMessage(`Added ${d.title || name}${d.searching ? ` - searching for ${cfg.searchingFor}` : ''}`, false);
+                    if (btn.isConnected) btn.outerHTML = '<span class="text-[10px] font-mono text-emerald-400 shrink-0 px-2">Added</span>';
                 } else {
                     showSnMessage(d.detail || `Dashboard error ${res.status} - see: journalctl -u dashboard`, true);
-                    if (res.status === 409) btn.outerHTML = '<span class="text-[10px] font-mono text-emerald-400 shrink-0 px-2">In Sonarr</span>';
+                    if (res.status === 409 && btn.isConnected) btn.outerHTML = `<span class="text-[10px] font-mono text-emerald-400 shrink-0 px-2">In ${cfg.label}</span>`;
                 }
             } catch (e) {
                 showSnMessage('Request failed - check your connection', true);
@@ -2189,54 +2225,87 @@ async function updatePiholeData() {
             }
         }
 
-        async function snLoadOptions() {
+        function snApplyOptions(app, body) {
             const rootSel = document.getElementById('sn-root'), profSel = document.getElementById('sn-profile');
-            if (!rootSel) return;
+            const prefs = snPrefs()[app] || {};
+            rootSel.innerHTML = (body.root_folders || []).map(r =>
+                `<option value="${escapeHtml(r.path)}">${escapeHtml(r.path)} (${escapeHtml(r.free_gb)} GB free)</option>`).join('');
+            profSel.innerHTML = (body.quality_profiles || []).map(p =>
+                `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('');
+            // Remembered choices apply only while they still exist in the app.
+            if (prefs.root && [...rootSel.options].some(o => o.value === prefs.root)) rootSel.value = prefs.root;
+            if (prefs.profile && [...profSel.options].some(o => o.value === prefs.profile)) profSel.value = prefs.profile;
+        }
+
+        async function snLoadOptions(app) {
+            if (snOptions[app]) { snApplyOptions(app, snOptions[app]); return; }
+            document.getElementById('sn-root').innerHTML = '';
+            document.getElementById('sn-profile').innerHTML = '';
             try {
-                const res = await fetch('/api/sonarr/options');
+                const res = await fetch(`/api/${app}/options`);
                 const body = await res.json().catch(() => ({}));
+                if (app !== snApp) return;   // switched away while this was loading
                 if (!res.ok) { showSnMessage(body.detail || `Dashboard error ${res.status}`, true, true); return; }
-                const prefs = snPrefs();
-                rootSel.innerHTML = (body.root_folders || []).map(r =>
-                    `<option value="${escapeHtml(r.path)}">${escapeHtml(r.path)} (${escapeHtml(r.free_gb)} GB free)</option>`).join('');
-                profSel.innerHTML = (body.quality_profiles || []).map(p =>
-                    `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('');
-                // Remembered choices apply only while they still exist in Sonarr.
-                if (prefs.root && [...rootSel.options].some(o => o.value === prefs.root)) rootSel.value = prefs.root;
-                if (prefs.profile && [...profSel.options].some(o => o.value === prefs.profile)) profSel.value = prefs.profile;
+                snOptions[app] = body;
+                snApplyOptions(app, body);
             } catch (e) {
-                showSnMessage('Could not reach the dashboard', true, true);
+                if (app === snApp) showSnMessage('Could not reach the dashboard', true, true);
             }
+        }
+
+        function snSetApp(app) {
+            snApp = app;
+            snSeq++;
+            const cfg = SN_APPS[app], prefs = snPrefs()[app] || {};
+            document.querySelectorAll('[data-sn-app]').forEach(b => {
+                const on = b.dataset.snApp === app;
+                b.setAttribute('aria-pressed', String(on));
+                b.className = 'px-2.5 py-1 cursor-pointer ' + (b.dataset.snApp === 'radarr' ? 'border-l border-slate-700 ' : '') +
+                    (on ? 'bg-emerald-600 text-white' : 'bg-slate-900/60 text-slate-400 hover:text-slate-200');
+            });
+            const input = document.getElementById('sn-search'), monitor = document.getElementById('sn-monitor');
+            input.placeholder = `Search for a ${cfg.noun} to add to ${cfg.label}...`;
+            monitor.innerHTML = cfg.monitor.map(([v, t]) => `<option value="${v}">${t}</option>`).join('');
+            if (prefs.monitor && cfg.monitor.some(([v]) => v === prefs.monitor)) monitor.value = prefs.monitor;
+            document.getElementById('sn-now').checked = typeof prefs.now === 'boolean' ? prefs.now : true;
+            document.getElementById('sn-msg').classList.add('hidden');
+            document.getElementById('sn-list').innerHTML = '<div class="text-xs text-slate-500 py-2">Type a name to search</div>';
+            snLoadOptions(app);
+            if (input.value.trim().length >= 2) snSearch();
         }
 
         function initAddShow() {
             const input = document.getElementById('sn-search');
             if (!input) return;
-            const prefs = snPrefs();
-            if (prefs.monitor && [...document.getElementById('sn-monitor').options].some(o => o.value === prefs.monitor)) {
-                document.getElementById('sn-monitor').value = prefs.monitor;
-            }
-            if (typeof prefs.now === 'boolean') document.getElementById('sn-now').checked = prefs.now;
+            const saved = snPrefs().app;
+            snSetApp(SN_APPS[saved] ? saved : 'sonarr');
             ['sn-root', 'sn-profile', 'sn-monitor', 'sn-now'].forEach(id => document.getElementById(id).addEventListener('change', snSavePrefs));
             input.addEventListener('input', () => {
                 clearTimeout(snSearchTimer);
                 snSearchTimer = setTimeout(snSearch, 450);
             });
             document.addEventListener('click', (e) => {
+                const tab = e.target.closest('[data-sn-app]');
+                if (tab && tab.dataset.snApp !== snApp) {
+                    snSetApp(tab.dataset.snApp);
+                    const prefs = snPrefs();
+                    prefs.app = snApp;
+                    snStorePrefs(prefs);
+                    return;
+                }
                 const add = e.target.closest('[data-sn-add]');
-                if (add) snAdd(add.dataset.snAdd, add.dataset.snName || 'this show', add);
+                if (add) snAdd(add.dataset.snAdd, add.dataset.snName || 'this title', add);
             });
-            snLoadOptions();
         }
 
-        // --- Sonarr Queue: Sonarr's downloads with live progress from qBittorrent ---
+        // --- Download Queue: Sonarr's and Radarr's downloads with live progress from qBittorrent ---
         const SQ_BAR = { active: 'bg-cyan-500', stalled: 'bg-amber-500', queued: 'bg-slate-500', paused: 'bg-slate-500',
                          checking: 'bg-indigo-500', done: 'bg-emerald-500', error: 'bg-rose-500' };
         const SQ_TEXT = { active: 'text-cyan-400', stalled: 'text-amber-400', queued: 'text-slate-400', paused: 'text-slate-400',
                           checking: 'text-indigo-400', done: 'text-emerald-400', error: 'text-rose-400' };
 
         function sqRowHtml(it) {
-            const title = [it.series, it.episodes].filter(Boolean).join(' · ');
+            const title = [it.title, it.detail].filter(Boolean).join(' · ');
             const stats = [
                 `<span class="${SQ_TEXT[it.kind] || 'text-slate-400'} font-bold">${escapeHtml(it.state)}</span>`,
                 `${escapeHtml(it.progress.toFixed(1))}%`,
@@ -2246,11 +2315,11 @@ async function updatePiholeData() {
                 it.in_qb ? `${escapeHtml(it.seeds)} seeds · ${escapeHtml(it.peers)} peers` : '',
                 it.size ? escapeHtml(it.size) : ''
             ].filter(Boolean).join(' <span class="text-slate-600">|</span> ');
-            const poster = it.series_id ? `/api/sonarr/poster?series_id=${encodeURIComponent(it.series_id)}` : '';
+            const badge = `<span class="text-[9px] font-mono uppercase px-1 py-px rounded bg-slate-700 text-slate-300 shrink-0">${it.app === 'radarr' ? 'Movie' : 'TV'}</span>`;
             return `<div class="flex items-start gap-3 p-2 rounded-lg bg-slate-900/40 border ${it.warning ? 'border-amber-500/40' : 'border-slate-700/40'}">
-                ${poster ? `<img class="cast-poster w-8 h-12 rounded object-cover bg-slate-800 shrink-0" loading="lazy" alt="" src="${poster}">` : ''}
+                ${it.poster ? `<img class="cast-poster w-8 h-12 rounded object-cover bg-slate-800 shrink-0" loading="lazy" alt="" src="${escapeHtml(it.poster)}">` : ''}
                 <div class="min-w-0 flex-1 space-y-1">
-                    <div class="text-sm text-slate-200 truncate" title="${escapeHtml(title)}">${escapeHtml(title)}</div>
+                    <div class="flex items-center gap-1.5 min-w-0">${badge}<span class="text-sm text-slate-200 truncate" title="${escapeHtml(title)}">${escapeHtml(title)}</span></div>
                     <div class="text-[10px] font-mono text-slate-500 truncate" title="${escapeHtml(it.release)}">${escapeHtml(it.release)}</div>
                     <div class="h-1.5 rounded bg-slate-700/60 overflow-hidden"><div class="h-full ${SQ_BAR[it.kind] || 'bg-slate-500'}" style="width:${Math.min(100, Math.max(0, it.progress))}%"></div></div>
                     <div class="text-[10px] font-mono text-slate-400 flex flex-wrap gap-x-1.5">${stats}</div>
@@ -2267,14 +2336,14 @@ async function updatePiholeData() {
         }
 
         let sqBusy = false;
-        async function loadSonarrQueue(force) {
+        async function loadDownloadQueue(force) {
             const list = document.getElementById('sq-list');
             if (!list || sqBusy) return;
             // Skip the poll while the tab is in the background or the widget is minimized.
             if (!force && (document.hidden || list.closest('.widget-card').classList.contains('is-collapsed'))) return;
             sqBusy = true;
             try {
-                const res = await fetch('/api/sonarr/queue');
+                const res = await fetch('/api/queue');
                 const body = await res.json().catch(() => ({}));
                 if (!res.ok) {
                     showSqMessage(body.detail || `Dashboard error ${res.status} - see: journalctl -u dashboard`);
@@ -2287,7 +2356,8 @@ async function updatePiholeData() {
                 vpn.textContent = vpnUp ? 'VPN on' : 'VPN off';
                 vpn.className = `text-[10px] px-1.5 py-0.5 rounded font-sans font-bold uppercase shrink-0 ${vpnUp ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`;
                 vpn.title = vpnUp ? `Windscribe tunnel up (${(body.vpn || {}).endpoint || '--'})` : 'Windscribe tunnel is down';
-                showSqMessage(body.qb_ok ? '' : "Can't reach qBittorrent - showing what Sonarr knows");
+                // One app being unreachable still leaves the other's queue to show; say which one is missing.
+                showSqMessage([...(body.errors || []), ...(body.qb_ok ? [] : ["Can't reach qBittorrent - showing what Sonarr/Radarr know"])].join(' · '));
                 document.getElementById('sq-summary').textContent = s.total
                     ? `${s.total} in queue · ${s.active} downloading · ${s.dl_speed}${s.warnings ? ` · ${s.warnings} need attention` : ''}`
                     : 'Queue is empty';
@@ -2301,7 +2371,114 @@ async function updatePiholeData() {
             }
         }
 
-        // --- Health banner: Sonarr + Prowlarr health checks, and torrents running while the VPN is down ---
+        // --- Media Requests: Seerr's pending requests (approve / decline) and the ones handled lately ---
+        const SR_TEXT = { pending: 'text-amber-400', approved: 'text-sky-400', available: 'text-emerald-400', declined: 'text-rose-400' };
+        let srMsgTimer = null, srBusy = false, srLoading = false;
+
+        function srAgo(iso) {
+            const t = Date.parse(iso);
+            if (!t) return '';
+            const mins = Math.max(0, Math.round((Date.now() - t) / 60000));
+            if (mins < 1) return 'just now';
+            if (mins < 60) return `${mins}m ago`;
+            if (mins < 1440) return `${Math.floor(mins / 60)}h ago`;
+            return `${Math.floor(mins / 1440)}d ago`;
+        }
+
+        function showSrMessage(text, isError) {
+            const el = document.getElementById('sr-msg');
+            if (!el) return;
+            el.textContent = text || '';
+            el.className = `text-[11px] font-mono break-words ${isError ? 'text-rose-400' : 'text-emerald-400'}${text ? '' : ' hidden'}`;
+            clearTimeout(srMsgTimer);
+            if (text) srMsgTimer = setTimeout(() => el.classList.add('hidden'), isError ? 9000 : 5000);
+        }
+
+        function srRowHtml(it, pending) {
+            const meta = [it.type === 'movie' ? 'Movie' : 'TV', it.seasons, it.is4k ? '4K' : '', it.year || '', `by ${it.requested_by}`, srAgo(it.created)]
+                .filter(Boolean).join(' · ');
+            const side = pending
+                ? `<div class="flex flex-col gap-1 shrink-0">
+                       <button type="button" class="tv-btn px-3" data-sr-act="approve" data-sr-id="${escapeHtml(it.id)}" data-sr-name="${escapeHtml(it.title)}">Approve</button>
+                       <button type="button" class="tv-btn px-3 text-rose-400" data-sr-act="decline" data-sr-id="${escapeHtml(it.id)}" data-sr-name="${escapeHtml(it.title)}">Decline</button>
+                   </div>`
+                : `<span class="text-[10px] font-mono font-bold shrink-0 text-right ${SR_TEXT[it.kind] || 'text-slate-400'}">${escapeHtml(it.state)}</span>`;
+            return `<div class="flex items-center gap-3 p-2 rounded-lg bg-slate-900/40 border border-slate-700/40">
+                ${it.poster ? `<img class="cast-poster w-8 h-12 rounded object-cover bg-slate-800 shrink-0" loading="lazy" alt="" src="${escapeHtml(it.poster)}">` : ''}
+                <div class="min-w-0 flex-1">
+                    <div class="text-sm text-slate-200 truncate" title="${escapeHtml(it.title)}">${escapeHtml(it.title)}</div>
+                    <div class="text-[10px] font-mono text-slate-500 truncate" title="${escapeHtml(meta)}">${escapeHtml(meta)}</div>
+                </div>
+                ${side}
+            </div>`;
+        }
+
+        async function loadSeerrRequests(force) {
+            const list = document.getElementById('sr-list');
+            if (!list || srLoading) return;
+            if (!force && (document.hidden || list.closest('.widget-card').classList.contains('is-collapsed'))) return;
+            srLoading = true;
+            try {
+                const res = await fetch('/api/seerr/requests');
+                const body = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    showSrMessage(body.detail || `Dashboard error ${res.status} - see: journalctl -u dashboard`, true);
+                    document.getElementById('sr-summary').textContent = 'Unavailable';
+                    list.innerHTML = '';
+                    return;
+                }
+                const c = body.counts || {};
+                document.getElementById('sr-summary').textContent =
+                    `${c.pending || 0} pending · ${c.processing || 0} processing · ${c.available || 0} available · ${c.total || 0} total`;
+                const pending = body.pending || [], recent = body.recent || [];
+                const scroll = list.scrollTop;
+                list.innerHTML =
+                    (pending.length ? pending.map(r => srRowHtml(r, true)).join('') : '<div class="text-xs text-slate-500 py-1">No requests waiting for approval</div>') +
+                    (recent.length ? `<div class="text-[10px] font-mono uppercase tracking-wide text-slate-500 pt-2">Recently handled</div>${recent.map(r => srRowHtml(r, false)).join('')}` : '');
+                list.scrollTop = scroll;
+            } catch (e) {
+                showSrMessage('Could not reach the dashboard', true);
+            } finally {
+                srLoading = false;
+            }
+        }
+
+        async function srAct(id, action, name, btn) {
+            if (srBusy) return;
+            const ask = action === 'approve'
+                ? `Approve "${name}"? Seerr will send it to Radarr/Sonarr to be downloaded.`
+                : `Decline "${name}"? The request is marked declined in Seerr.`;
+            if (!confirm(ask)) return;
+            srBusy = true;
+            btn.disabled = true;
+            try {
+                const res = await fetch(`/api/seerr/request/${encodeURIComponent(id)}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action })
+                });
+                const d = await res.json().catch(() => ({}));
+                if (res.ok) {
+                    showSrMessage(`${action === 'approve' ? 'Approved' : 'Declined'} ${name}`, false);
+                } else {
+                    showSrMessage(d.detail || `Dashboard error ${res.status} - see: journalctl -u dashboard`, true);
+                }
+            } catch (e) {
+                showSrMessage('Request failed - check your connection', true);
+            } finally {
+                srBusy = false;
+                if (btn.isConnected) btn.disabled = false;
+                srLoading = false;
+                loadSeerrRequests(true);
+            }
+        }
+
+        document.addEventListener('click', (e) => {
+            const b = e.target.closest('[data-sr-act]');
+            if (b) srAct(b.dataset.srId, b.dataset.srAct, b.dataset.srName || 'this request', b);
+        });
+
+        // --- Health banner: Sonarr / Radarr / Prowlarr / Seerr health, and torrents running while the VPN is down ---
         let healthBusy = false;
         async function loadHealthBanner() {
             const el = document.getElementById('health-banner');
@@ -2404,8 +2581,8 @@ async function updatePiholeData() {
 
         // Mobile stacking order (desktop keeps its three-column layout). Lower = higher on the page.
         const MOBILE_ORDER = [
-            'active-streams', 'tv-remote', 'open-on-tv', 'add-show', 'hardware-controls', 'core-services-daemon', 'system-hardware',
-            'network-protection', 'bittorrent-engine', 'sonarr-queue', 'upcoming-episodes', 'tunnel-routing-topology', 'media-integrity',
+            'active-streams', 'tv-remote', 'open-on-tv', 'add-media', 'media-requests', 'hardware-controls', 'core-services-daemon', 'system-hardware',
+            'network-protection', 'bittorrent-engine', 'download-queue', 'upcoming-episodes', 'tunnel-routing-topology', 'media-integrity',
             'process-monitor', 'package-manager', 'public-ip', 'pi-hole-updates',
             'system-compute-timeline', 'i-o-throughput-history-kb-s'
         ];
@@ -2527,8 +2704,10 @@ async function updatePiholeData() {
         setInterval(updateTvStatus, 5000);
         initCast();
         initAddShow();
-        loadSonarrQueue(true);
-        setInterval(loadSonarrQueue, 5000);
+        loadDownloadQueue(true);
+        setInterval(loadDownloadQueue, 5000);
+        loadSeerrRequests(true);
+        setInterval(loadSeerrRequests, 15000);
         loadCalendar(true);
         setInterval(loadCalendar, 300000);
         loadHealthBanner();
